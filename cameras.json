@@ -1,0 +1,11 @@
+[
+  {
+    "id": "b02d7256-7f93-48e9-bf5c-f88beb799ef0",
+    "name": "tt",
+    "url": "rtsp://192.168.10.51:554/stream",
+    "zone": "tt",
+    "status": "live",
+    "createdAt": "2026-09-07T18:16:04.271Z",
+    "lastTestedAt": "2026-09-07T18:54:16.184Z"
+  }
+]

@@ -1,0 +1,191 @@
+{
+  "459902aa-d109-4e78-aef8-b8ef4ed7ea67": [
+    {
+      "at": "2026-09-07T18:18:08.399Z",
+      "blocks": 17,
+      "area": 1.39,
+      "peopleDetected": 2,
+      "workersAssigned": 3
+    },
+    {
+      "at": "2026-09-07T18:19:08.402Z",
+      "blocks": 3,
+      "area": 0.245,
+      "peopleDetected": 1,
+      "workersAssigned": 3
+    },
+    {
+      "at": "2026-09-07T18:20:08.404Z",
+      "blocks": 20,
+      "area": 1.635,
+      "peopleDetected": 0,
+      "workersAssigned": 3
+    },
+    {
+      "at": "2026-09-07T18:21:08.372Z",
+      "blocks": 20,
+      "area": 1.635,
+      "peopleDetected": 0,
+      "workersAssigned": 3
+    },
+    {
+      "at": "2026-09-07T18:22:08.372Z",
+      "blocks": 0,
+      "area": 0,
+      "peopleDetected": 0,
+      "workersAssigned": 3
+    },
+    {
+      "at": "2026-09-07T18:40:14.566Z",
+      "blocks": 12,
+      "area": 0.981,
+      "peopleDetected": 0,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-40-14-566Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:41:14.567Z",
+      "blocks": 9,
+      "area": 0.736,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-41-14-567Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:42:14.568Z",
+      "blocks": 9,
+      "area": 0.736,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-42-14-568Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:43:14.570Z",
+      "blocks": 9,
+      "area": 0.736,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-43-14-570Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:44:14.572Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-44-14-572Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:45:14.574Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-45-14-574Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:46:14.576Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-46-14-576Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:47:14.577Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-47-14-577Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:48:14.579Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-48-14-579Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:49:14.581Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-49-14-581Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:50:14.582Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-50-14-582Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:51:14.576Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-51-14-576Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:52:14.577Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-52-14-577Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:53:14.578Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-53-14-578Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:54:14.581Z",
+      "blocks": 8,
+      "area": 0.654,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-54-14-581Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:55:14.581Z",
+      "blocks": 1,
+      "area": 0.082,
+      "peopleDetected": 0,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-55-14-581Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:56:14.583Z",
+      "blocks": 16,
+      "area": 1.308,
+      "peopleDetected": 0,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-56-14-583Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:57:14.584Z",
+      "blocks": 10,
+      "area": 0.818,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-57-14-584Z.jpg"
+    },
+    {
+      "at": "2026-09-07T18:58:14.585Z",
+      "blocks": 11,
+      "area": 0.899,
+      "peopleDetected": 1,
+      "workersAssigned": 3,
+      "snapshot": "/snapshots/459902aa-d109-4e78-aef8-b8ef4ed7ea67/2026-09-07T18-58-14-585Z.jpg"
+    }
+  ]
+}

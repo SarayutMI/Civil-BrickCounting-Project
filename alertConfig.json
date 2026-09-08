@@ -1,0 +1,8 @@
+{
+  "webhook": "",
+  "cameraOffline": false,
+  "serverOffline": true,
+  "aiStopped": true,
+  "internetDown": false,
+  "noImage": true
+}

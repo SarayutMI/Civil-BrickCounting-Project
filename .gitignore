@@ -1,0 +1,10 @@
+.DS_Store
+
+# React client — deps are reproducible via `npm install` inside client/, unlike the
+# root project (this repo's existing convention commits root node_modules directly)
+client/node_modules/
+
+# Runtime-generated data — grows unbounded, not source
+snapshots/
+ftp-uploads/
+backups/
