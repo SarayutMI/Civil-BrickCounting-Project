@@ -1,0 +1,93 @@
+import { useState } from 'react';
+import Icon from '../icons/Icon.jsx';
+import StatCard from '../components/StatCard.jsx';
+import LineChart from '../components/charts/LineChart.jsx';
+import { StatusBadge, pct } from '../utils.jsx';
+
+const STEPS = ['เริ่มงาน', 'ตรวจจับ 25%', 'ตรวจจับ 50%', 'ตรวจจับ 75%', 'เสร็จสิ้น'];
+
+/* Ported from app.js renderDashboard()/paintDashboard(). The task select
+   resets to currentTaskId (or the first task) each time this view is
+   opened, same as the original — since App unmounts Dashboard when the
+   user navigates away, a lazy useState initializer reproduces that. */
+export default function Dashboard({ tasks, currentTaskId }) {
+  const [selectedTaskId, setSelectedTaskId] = useState(() => (
+    currentTaskId && tasks.some((t) => t.id === currentTaskId) ? currentTaskId : (tasks[0]?.id || '')
+  ));
+
+  const t = tasks.find((x) => x.id === selectedTaskId);
+
+  return (
+    <section id="view-dashboard" className="view active">
+      <div className="section-head">
+        <div><h2>Dashboard</h2><p>วิเคราะห์ความคืบหน้าของงาน</p></div>
+        <select className="select" value={selectedTaskId} onChange={(e) => setSelectedTaskId(e.target.value)}>
+          {tasks.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>
+      </div>
+
+      {!t ? (
+        <div className="card"><div className="card-body"><div className="empty-state"><Icon name="empty" /><div className="e-title">ยังไม่มี Task</div></div></div></div>
+      ) : (
+        <>
+          <div id="dashStats" className="grid-stats">
+            <StatCard icon={<Icon name="percent" />} label="ความสำเร็จของงาน" value={pct(t.area, t.expectedArea) + '%'} />
+            <StatCard icon={<Icon name="area" />} label="พื้นที่เป้าหมาย" value={t.expectedArea + ' m²'} />
+            <StatCard icon={<Icon name="check" />} label="พื้นที่ที่ก่อเสร็จแล้ว" value={t.area + ' m²'} />
+            <StatCard icon={<Icon name="users" />} label="แรงงานที่มอบหมาย" value={t.workers.length + ' คน'} />
+            <StatCard icon={<Icon name="users" />} label="คนที่ตรวจพบ (AI)" value={(t.peopleDetected || 0) + ' คน'} />
+          </div>
+
+          <div className="card" style={{ marginBottom: 18 }}>
+            <div className="card-head"><h3>Progress Timeline</h3></div>
+            <div className="card-body">
+              <div id="dashTimeline" className="timeline">
+                {STEPS.map((s, i) => {
+                  const activeStep = Math.min(4, Math.floor(pct(t.area, t.expectedArea) / 25));
+                  const active = i <= activeStep;
+                  return (
+                    <div key={s} style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
+                      <div style={{ width: 12, height: 12, borderRadius: '50%', margin: '0 auto 8px', background: active ? 'var(--accent)' : 'var(--divider-strong)' }} />
+                      <div style={{ fontSize: 11.5, color: active ? 'var(--text)' : 'var(--muted-2)', fontWeight: active ? 600 : 500 }}>{s}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="two-col">
+            <div className="card"><div className="card-head"><h3>Progress Chart</h3></div><div className="card-body"><div id="dashChart" className="chart"><LineChart series={t.progressSeries && t.progressSeries.length ? t.progressSeries : [0]} color="var(--accent)" /></div></div></div>
+            <div className="card"><div className="card-head"><h3>Snapshots</h3></div><div className="card-body">
+              <div id="dashGallery" className="gallery">
+                {Array.from({ length: 8 }, (_, i) => ({ time: `08:${(i * 30 % 60).toString().padStart(2, '0')}` })).map((s, i) => (
+                  <div className="gallery-item" key={i}><div className="g-mock" /><div className="g-time">{s.time} · วันนี้</div></div>
+                ))}
+              </div>
+            </div></div>
+          </div>
+
+          <div className="card" style={{ marginTop: 18 }}>
+            <div className="card-head"><h3>Task History</h3></div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>งาน</th><th>Zone</th><th>สถานะ</th><th>ความคืบหน้า</th><th>พื้นที่</th></tr></thead>
+                <tbody id="dashHistoryBody">
+                  {tasks.map((x) => (
+                    <tr key={x.id}>
+                      <td className="cell-strong">{x.name}</td>
+                      <td className="cell-muted">{x.zone}</td>
+                      <td><StatusBadge status={x.status} /></td>
+                      <td className="cell-muted">{pct(x.area, x.expectedArea)}%</td>
+                      <td className="cell-muted">{x.area} m²</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}

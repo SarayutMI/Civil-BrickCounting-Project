@@ -1,0 +1,390 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import Icon from '../icons/Icon.jsx';
+import BentoItem from '../components/BentoItem.jsx';
+import RoiCanvas from '../components/RoiCanvas.jsx';
+import BBoxCanvas from '../components/BBoxCanvas.jsx';
+import { StatusBadge, CameraBadge, workerName, pct } from '../utils.jsx';
+import { useToast } from '../components/Toast.jsx';
+import * as api from '../api.js';
+
+const HISTORY_TABS = [
+  ['hour', '1 ชม.ล่าสุด'],
+  ['today', 'วันนี้'],
+  ['7d', '7 วัน'],
+  ['all', 'ทั้งหมด'],
+];
+
+function historyFromParam(period) {
+  const now = new Date();
+  if (period === 'hour') return new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  if (period === 'today') { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.toISOString(); }
+  if (period === '7d') return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  return null; // 'all'
+}
+
+/* ===================================================================
+   TaskDetail — ported from app.js openTaskDetail()/paintTaskDetail()/
+   refreshTaskLiveFields(). `task` is the live object from the shared
+   central `tasks` state (kept fresh here via 2s polling); the form
+   fields below are a separate local copy seeded once per taskId so
+   the 2s poll never clobbers an in-progress edit — same split as the
+   original (paintTaskDetail vs refreshTaskLiveFields).
+=================================================================== */
+export default function TaskDetail({ taskId, task, brickTypes, workersMaster, cameras, mergeTask, patchTaskRemote, onBack, onDeleted, reloadTasks }) {
+  const toast = useToast();
+
+  // ---- Form state (seeded once per taskId; not touched by polling) ----
+  const [name, setName] = useState('');
+  const [zone, setZone] = useState('');
+  const [brickType, setBrickType] = useState('');
+  const [expectedArea, setExpectedArea] = useState(100);
+  const [schedule, setSchedule] = useState({ start: '', breakStart: '', breakEnd: '', end: '' });
+  const [confidence, setConfidence] = useState(75);
+  const [snapshotInterval, setSnapshotInterval] = useState(30);
+  const [roiPoints, setRoiPoints] = useState([]);
+  const [selectedCameraId, setSelectedCameraId] = useState('');
+  const [workerSelectValue, setWorkerSelectValue] = useState('');
+  const [streamKey, setStreamKey] = useState(0);
+  const [cameraLiveState, setCameraLiveState] = useState('idle'); // idle|connecting|live|error
+
+  const [historyPeriod, setHistoryPeriod] = useState('today');
+  const [historyList, setHistoryList] = useState([]);
+
+  const tdTimelapseImgRef = useRef(null);
+
+  // Seed form state whenever we switch to a different task.
+  useEffect(() => {
+    if (!task) return;
+    setName(task.name);
+    setZone(task.zone);
+    setBrickType(task.brickType);
+    setExpectedArea(task.expectedArea);
+    setSchedule(task.schedule || { start: '08:00', breakStart: '12:00', breakEnd: '13:00', end: '17:00' });
+    setConfidence(task.confidence);
+    setSnapshotInterval(task.snapshotInterval || 30);
+    setRoiPoints((task.roi || []).map((p) => [...p]));
+    const auto = task.cameraId || (cameras.find((c) => c.zone && task.zone && c.zone.toLowerCase() === task.zone.toLowerCase())?.id) || '';
+    setSelectedCameraId(auto);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
+
+  // ---- Live polling: GET /api/tasks/:id every 2s ----
+  useEffect(() => {
+    const id = setInterval(async () => {
+      const fresh = await api.getTask(taskId);
+      if (fresh) mergeTask(fresh);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [taskId, mergeTask]);
+
+  // ---- History polling: GET /api/tasks/:id/history every 15s + on period change ----
+  useEffect(() => {
+    let cancelled = false;
+    async function refresh() {
+      const from = historyFromParam(historyPeriod);
+      const list = await api.getTaskHistory(taskId, from ? { from } : {});
+      if (!cancelled) setHistoryList(list);
+    }
+    refresh();
+    const id = setInterval(refresh, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [taskId, historyPeriod]);
+
+  // ---- Camera live-state reset on (re)connect ----
+  useEffect(() => {
+    setCameraLiveState(selectedCameraId ? 'connecting' : 'idle');
+  }, [selectedCameraId, streamKey]);
+
+  const streamUrl = useMemo(
+    () => (selectedCameraId ? api.cameraStreamUrl(selectedCameraId, { fps: 6, width: 960 }) : null),
+    [selectedCameraId, streamKey]
+  );
+
+  // ---- Time-lapse preview frame cycling once status === 'ready' ----
+  useEffect(() => {
+    if (!task || task.status !== 'finished' || task.timelapseStatus !== 'ready') return undefined;
+    let cancelled = false;
+    let timer = null;
+    (async () => {
+      const list = await api.getTaskHistory(taskId, { limit: 120 });
+      const frames = list.map((e) => e.snapshot).filter(Boolean);
+      if (cancelled || frames.length === 0) return;
+      const img = tdTimelapseImgRef.current;
+      if (!img) return;
+      let i = 0;
+      img.src = frames[0];
+      timer = setInterval(() => {
+        i = (i + 1) % frames.length;
+        if (tdTimelapseImgRef.current) tdTimelapseImgRef.current.src = frames[i];
+      }, 400);
+    })();
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [taskId, task?.status, task?.timelapseStatus]);
+
+  if (!task) return null;
+
+  const bt = brickTypes.find((b) => b.id === task.brickType);
+  const ratio = bt?.blocksPerSqm ?? null;
+
+  function setTaskCamera(camId, silent) {
+    setSelectedCameraId(camId);
+    mergeTask({ ...task, cameraId: camId || null });
+    patchTaskRemote(task.id, { cameraId: camId || null });
+    if (!silent) toast('กำลังเชื่อมต่อกล้อง...');
+  }
+
+  function refreshTaskCamera() {
+    if (selectedCameraId) setStreamKey((k) => k + 1);
+    else toast('กรุณาเลือกกล้องก่อน');
+  }
+
+  function addWorkerToTask(wid) {
+    if (!wid) return;
+    if (task.workers.includes(wid)) return;
+    const workers = [...task.workers, wid];
+    mergeTask({ ...task, workers });
+    patchTaskRemote(task.id, { workers });
+    toast('เพิ่มแรงงานเข้างานแล้ว');
+    setWorkerSelectValue('');
+  }
+  function removeWorkerFromTask(wid) {
+    const workers = task.workers.filter((w) => w !== wid);
+    mergeTask({ ...task, workers });
+    patchTaskRemote(task.id, { workers });
+    toast('นำแรงงานออกจากงานแล้ว');
+  }
+
+  async function saveTaskInfo() {
+    const partial = {
+      name: name || task.name,
+      zone: zone || task.zone,
+      brickType,
+      expectedArea: parseFloat(expectedArea) || task.expectedArea,
+      schedule,
+      confidence: parseInt(confidence, 10),
+      snapshotInterval: parseInt(snapshotInterval, 10) || 30,
+      roi: roiPoints.map((p) => [...p]),
+    };
+    const { ok, data } = await api.patchTask(task.id, partial);
+    if (ok) {
+      mergeTask(data);
+      toast('บันทึกข้อมูล Task เรียบร้อยแล้ว (persist ลง tasks.json)', 'success');
+    } else {
+      toast(data.message || 'บันทึกไม่สำเร็จ');
+    }
+  }
+
+  async function setTaskStatus(status) {
+    mergeTask({ ...task, status });
+    const { ok, data } = await api.patchTask(task.id, { status });
+    if (ok) mergeTask(data);
+    const label = { running: 'เริ่มตรวจจับแล้ว', pause: 'พักการตรวจจับแล้ว', finished: 'หยุดการตรวจจับแล้ว' };
+    toast(label[status] || 'อัปเดตสถานะแล้ว', 'success');
+    if (!ok) toast(data.message || 'บันทึกสถานะไม่สำเร็จ');
+  }
+
+  function roiUndo() { setRoiPoints((pts) => pts.slice(0, -1)); }
+  function roiClear() { setRoiPoints([]); toast('ลบพื้นที่ ROI แล้ว'); }
+  function roiClose() {
+    if (roiPoints.length < 3) { toast('ต้องมีอย่างน้อย 3 จุดเพื่อปิดพื้นที่'); return; }
+    toast('ปิดพื้นที่ ROI แล้ว — อย่าลืมกด "บันทึก ROI" เพื่อ persist ค่านี้');
+  }
+  async function saveRoi() {
+    if (roiPoints.length > 0 && roiPoints.length < 3) {
+      toast('ต้องมีอย่างน้อย 3 จุดเพื่อบันทึก ROI (หรือกด Clear ถ้าไม่ต้องการ ROI)');
+      return;
+    }
+    const { ok, data } = await api.patchTask(task.id, { roi: roiPoints.map((p) => [...p]) });
+    if (ok) { mergeTask(data); toast('บันทึก ROI แล้ว — ระบบจะใช้ตำแหน่งนี้นับรอบถัดไปทันที', 'success'); }
+    else toast(data.message || 'บันทึก ROI ไม่สำเร็จ');
+  }
+
+  async function rebuildTimelapse() {
+    const { ok, data } = await api.buildTimelapse(task.id);
+    toast(data.message || 'กำลังสร้างวิดีโอ...', ok ? 'success' : 'info');
+  }
+
+  async function deleteTaskItem() {
+    if (!window.confirm('ยืนยันลบ Task นี้? การลบไม่สามารถย้อนกลับได้')) return;
+    const { ok, data } = await api.deleteTask(task.id);
+    if (ok) { toast('ลบ Task แล้ว', 'success'); await reloadTasks(); onDeleted(); }
+    else toast(data.message || 'ลบ Task ไม่สำเร็จ');
+  }
+
+  const availableWorkers = workersMaster.filter((w) => !task.workers.includes(w.id));
+
+  const cameraMock = (() => {
+    if (!selectedCameraId) return <div>ยังไม่ได้เลือกกล้อง<br /><small>เลือก Source ด้านบนเพื่อดูภาพสด</small></div>;
+    if (cameraLiveState === 'error') return <div>เชื่อมต่อสตรีมไม่สำเร็จ<br /><small>ลองกด "รีเฟรชภาพ" หรือตรวจสอบกล้อง</small></div>;
+    return <div>กำลังเชื่อมต่อสตรีม...</div>;
+  })();
+  const liveStateText = !selectedCameraId ? '' : cameraLiveState === 'live' ? '● LIVE' : cameraLiveState === 'error' ? '✕ ไม่สามารถเชื่อมต่อ' : 'กำลังเชื่อมต่อ...';
+  const liveStateColor = cameraLiveState === 'live' ? 'var(--green)' : cameraLiveState === 'error' ? 'var(--danger)' : 'var(--muted)';
+
+  const historyRows = historyList.slice().reverse();
+
+  return (
+    <div id="view-task-detail" className="view active">
+      <div className="detail-back"><button className="btn btn-secondary" onClick={onBack}>← กลับ Tasks</button></div>
+      <div className="section-head">
+        <div><h2>Task Detail</h2><p><CameraBadge status={task.cameraStatus} /> <StatusBadge status={task.status} /> <span>อัปเดตล่าสุด {task.lastUpdate}</span></p></div>
+      </div>
+
+      <div id="tdBento" className="bento" style={{ marginBottom: 18 }}>
+        <BentoItem icon={<Icon name="users" />} label="แรงงานที่มอบหมาย" value={task.workers.length + ' คน'} bg="var(--accent-tint)" fg="var(--accent)" />
+        <BentoItem icon={<Icon name="users" />} label="คนที่ตรวจพบ (AI Real-time)" value={(task.peopleDetected || 0) + ' คน'} bg="var(--purple-tint)" fg="var(--purple)" />
+        <BentoItem icon={<Icon name="area" />} label="พื้นที่ที่ตรวจจับได้" value={task.area + ' m²'} bg="var(--green-tint)" fg="var(--green)" />
+        <BentoItem icon={<Icon name="percent" />} label="อัตราความสำเร็จ" value={pct(task.area, task.expectedArea) + '%'} bg="var(--amber-tint)" fg="var(--amber)" />
+        <BentoItem icon={<Icon name="block" />} label="จำนวนบล็อกทั้งหมด" value={task.blocks.toLocaleString() + (ratio ? ` (÷${ratio}/m²)` : '')} bg="var(--gray-tint)" fg="var(--muted)" />
+      </div>
+
+      <div className="detail-grid">
+        <div className="card">
+          <div className="card-head">
+            <h3>Live Camera / ROI</h3>
+            <div className="action-row">
+              <button className="btn btn-secondary btn-sm" onClick={roiUndo}>Undo</button>
+              <button className="btn btn-secondary btn-sm" onClick={roiClear}>Clear</button>
+              <button className="btn btn-secondary btn-sm" onClick={roiClose}>ปิด ROI</button>
+              <button className="btn btn-primary btn-sm" onClick={saveRoi}>บันทึก ROI</button>
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="action-row" style={{ alignItems: 'center', marginBottom: 12, gap: 10 }}>
+              <select className="input" style={{ maxWidth: 280 }} value={selectedCameraId} onChange={(e) => setTaskCamera(e.target.value)}>
+                <option value="">— ไม่เลือกกล้อง —</option>
+                {cameras.map((c) => <option key={c.id} value={c.id}>{c.name}{c.zone ? ' — ' + c.zone : ''}</option>)}
+              </select>
+              <button className="btn btn-secondary btn-sm" onClick={refreshTaskCamera}>รีเฟรชภาพ</button>
+              <span style={{ fontSize: 12, color: liveStateColor }}>{liveStateText}</span>
+            </div>
+            <div className="camera-frame">
+              <div className="camera-mock" style={{ display: cameraLiveState === 'live' ? 'none' : 'grid' }}>{cameraMock}</div>
+              {selectedCameraId && (
+                <img
+                  className="camera-img"
+                  style={{ display: cameraLiveState === 'live' ? 'block' : 'none' }}
+                  src={streamUrl}
+                  onLoad={() => setCameraLiveState('live')}
+                  onError={() => setCameraLiveState('error')}
+                  alt=""
+                />
+              )}
+              <div className="camera-overlay"><span className="badge badge-live">AI CAMERA</span><span className="badge badge-finished">Click เพื่อวาด ROI</span></div>
+              <RoiCanvas points={roiPoints} onAddPoint={(nx, ny) => setRoiPoints((pts) => [...pts, [nx, ny]])} />
+              <BBoxCanvas lastDetection={task.lastDetection} />
+            </div>
+            <p className="cell-muted" style={{ fontSize: 12, marginTop: 8 }}>
+              ระบบตรวจจับต่อเนื่องอัตโนมัติ (realtime) ทันทีที่ Task อยู่สถานะ "กำลังดำเนินการ" มีกล้อง และวาด ROI แล้ว — ไม่ต้องกดปุ่มตรวจจับเอง<br />
+              <span style={{ color: 'var(--green)' }}>■</span> เขียว = อิฐที่ AI ตรวจจับได้ทั้งหมด{' '}
+              <span style={{ color: 'var(--accent)' }}>■</span> ฟ้า = bbox ที่นำมานับจริง (จุดกึ่งกลางอยู่ใน ROI){' '}
+              <span style={{ color: 'var(--orange)' }}>■</span> ส้ม = คนที่โมเดลที่สองตรวจพบ (เส้นทึบ = อยู่ในโซนงาน, เส้นประ = นอกโซน)
+            </p>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head"><h3>Task Information</h3></div>
+          <div className="card-body">
+            <div className="form-grid">
+              <div className="form-group full"><label>ชื่องาน</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
+              <div className="form-group"><label>Zone</label><input className="input" value={zone} onChange={(e) => setZone(e.target.value)} /></div>
+              <div className="form-group"><label>ประเภทอิฐ (Profile)</label>
+                <select className="select" value={brickType} onChange={(e) => setBrickType(e.target.value)}>
+                  {brickTypes.map((b) => <option key={b.id} value={b.id}>{b.name} — {b.blocksPerSqm} ก้อน/ตร.ม.</option>)}
+                </select>
+              </div>
+              <div className="form-group"><label>เป้าหมายพื้นที่ (ตร.ม.)</label><input type="number" min="1" step="1" className="input" value={expectedArea} onChange={(e) => setExpectedArea(e.target.value)} /></div>
+            </div>
+            <div className="divider" />
+            <div className="form-group">
+              <label>แรงงานในงาน</label>
+              <div id="tdWorkerPills">
+                {task.workers.length === 0 ? <span className="cell-muted" style={{ fontSize: 13 }}>ยังไม่มีแรงงานในงานนี้</span> : task.workers.map((wid) => (
+                  <span className="pill" key={wid}>{workerName(workersMaster, wid)} <button aria-label="ลบ" onClick={() => removeWorkerFromTask(wid)}><Icon name="x" /></button></span>
+                ))}
+              </div>
+              <select className="select" value={workerSelectValue} onChange={(e) => addWorkerToTask(e.target.value)}>
+                <option value="">+ เพิ่มแรงงาน...</option>
+                {availableWorkers.map((w) => <option key={w.id} value={w.id}>{w.name} — {w.role}</option>)}
+              </select>
+            </div>
+            <div className="divider" />
+            <div className="form-grid">
+              <div className="form-group"><label>เริ่มงาน</label><input type="time" className="input" value={schedule.start} onChange={(e) => setSchedule({ ...schedule, start: e.target.value })} /></div>
+              <div className="form-group"><label>เลิกงาน</label><input type="time" className="input" value={schedule.end} onChange={(e) => setSchedule({ ...schedule, end: e.target.value })} /></div>
+              <div className="form-group"><label>เริ่มพัก</label><input type="time" className="input" value={schedule.breakStart} onChange={(e) => setSchedule({ ...schedule, breakStart: e.target.value })} /></div>
+              <div className="form-group"><label>จบพัก</label><input type="time" className="input" value={schedule.breakEnd} onChange={(e) => setSchedule({ ...schedule, breakEnd: e.target.value })} /></div>
+            </div>
+            <div className="divider" />
+            <div className="form-grid">
+              <div className="form-group">
+                <label>AI Confidence <span>{confidence}%</span></label>
+                <div className="range-row"><input type="range" min="50" max="99" value={confidence} onChange={(e) => setConfidence(e.target.value)} /><span className="text-mono">%</span></div>
+              </div>
+              <div className="form-group"><label>ความถี่ตรวจจับ (วินาที)</label><input type="number" min="1" step="1" className="input" value={snapshotInterval} onChange={(e) => setSnapshotInterval(e.target.value)} /></div>
+            </div>
+            <div className="divider" />
+            <div className="action-row">
+              <button className="btn btn-primary" disabled={task.status === 'running'} onClick={() => setTaskStatus('running')}>เริ่มตรวจจับ</button>
+              <button className="btn btn-secondary" disabled={task.status !== 'running'} onClick={() => setTaskStatus('pause')}>พัก</button>
+              <button className="btn btn-secondary" disabled={task.status === 'finished'} onClick={() => setTaskStatus('finished')}>หยุด</button>
+              <button className="btn btn-secondary" onClick={saveTaskInfo}>บันทึก</button>
+              <button className="btn btn-danger" style={{ marginLeft: 'auto' }} onClick={deleteTaskItem}>ลบ Task</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 18 }}>
+        <div className="card-head">
+          <h3>Task History — ประวัติการตรวจจับตามช่วงเวลา</h3>
+          <div className="tabs">
+            {HISTORY_TABS.map(([key, label]) => (
+              <button key={key} className={`tab-btn${historyPeriod === key ? ' active' : ''}`} onClick={() => setHistoryPeriod(key)}>{label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>เวลา</th><th>จำนวนบล็อก</th><th>พื้นที่</th><th>คนที่ตรวจพบ (AI)</th><th>แรงงานที่มอบหมาย</th></tr></thead>
+            <tbody>
+              {historyRows.length === 0 ? (
+                <tr><td colSpan={5}><div className="empty-state"><Icon name="empty" /><div className="e-title">ยังไม่มีประวัติในช่วงเวลานี้</div><div className="e-desc">ระบบจะบันทึกทุก 1 นาที ขณะ Task อยู่สถานะ "กำลังดำเนินการ"</div></div></td></tr>
+              ) : historyRows.map((e, i) => (
+                <tr key={i}>
+                  <td className="cell-muted">{new Date(e.at).toLocaleString('th-TH')}</td>
+                  <td className="cell-strong">{e.blocks.toLocaleString()}</td>
+                  <td className="cell-muted">{e.area} m²</td>
+                  <td className="cell-muted">{e.peopleDetected || 0} คน</td>
+                  <td className="cell-muted">{e.workersAssigned || 0} คน</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="cell-muted" style={{ fontSize: 12, padding: '0 20px 16px' }}>บันทึก snapshot อัตโนมัติทุก 1 นาที ขณะ Task อยู่สถานะ "กำลังดำเนินการ" — persist ลง <code>taskHistory.json</code></p>
+      </div>
+
+      {task.status === 'finished' && (
+        <div id="tdTimelapseCard" className="card" style={{ marginTop: 18 }}>
+          <div className="card-head">
+            <h3>Time-lapse — งานนี้เสร็จแล้ว</h3>
+            <div className="action-row">
+              <button className="btn btn-secondary btn-sm" onClick={rebuildTimelapse}>สร้างใหม่</button>
+              <a className="btn btn-primary btn-sm" href={api.timelapseDownloadUrl(task.id)}>ดาวน์โหลดวิดีโอ</a>
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="camera-frame" style={{ height: 260 }}>
+              <img ref={tdTimelapseImgRef} className="camera-img" style={{ display: task.timelapseStatus === 'ready' ? 'block' : 'none' }} alt="" />
+              {task.timelapseStatus !== 'ready' && (
+                <div className="camera-mock"><div>{task.timelapseStatus === 'failed' ? 'สร้างวิดีโอไม่สำเร็จ — ลองกด "สร้างใหม่"' : 'กำลังสร้างวิดีโอ...'}</div></div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
