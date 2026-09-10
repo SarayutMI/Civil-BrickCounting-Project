@@ -1,0 +1,41 @@
+[
+  {
+    "id": "admin",
+    "name": "Admin",
+    "permissions": {
+      "home": true,
+      "task": true,
+      "dashboard": true,
+      "reports": true,
+      "logs": true,
+      "settings": true
+    },
+    "locked": true
+  },
+  {
+    "id": "engineer",
+    "name": "Engineer",
+    "permissions": {
+      "home": true,
+      "task": true,
+      "dashboard": true,
+      "reports": true,
+      "logs": true,
+      "settings": false
+    },
+    "locked": true
+  },
+  {
+    "id": "viewer",
+    "name": "Viewer",
+    "permissions": {
+      "home": true,
+      "task": false,
+      "dashboard": true,
+      "reports": true,
+      "logs": false,
+      "settings": false
+    },
+    "locked": true
+  }
+]

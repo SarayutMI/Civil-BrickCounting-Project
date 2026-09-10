@@ -14,6 +14,7 @@
     }
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-size:14px}
     button,input,select{font:inherit} button{cursor:pointer}
+    svg[fill="none"]{stroke:currentColor}
     .app{min-height:100vh}.sidebar{position:fixed;inset:0 auto 0 0;width:var(--sidebar);background:#fbfbfd;border-right:1px solid var(--divider);padding:22px 14px;z-index:20}
     .brand{padding:4px 12px 24px}.brand strong{font-size:20px;letter-spacing:-.5px}.brand small{display:block;color:var(--muted);margin-top:4px}
     .nav{display:grid;gap:4px}.nav-item{border:0;background:transparent;text-align:left;padding:11px 12px;border-radius:10px;color:#4b4b50;display:flex;align-items:center;gap:11px}
@@ -36,7 +37,7 @@
     .badge{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}.badge-running,.badge-live{background:#eaf7ee;color:#16803c}.badge-pause,.badge-connecting{background:#fff5e6;color:#9a5a00}.badge-finished{background:#f0f0f2;color:#5e5e63}.badge-disconnect{background:#fdeeee;color:#b42323}.badge-role{background:#eaf3ff;color:#1769aa}
     .progress-bar{height:7px;background:#e9e9ed;border-radius:999px;overflow:hidden}.progress-bar .fill{height:100%;background:var(--accent);border-radius:999px}
     .empty-state{text-align:center;padding:42px 20px;color:var(--muted)}.empty-state svg{width:42px;height:42px;margin-bottom:10px;color:var(--muted-2)}.e-title{font-weight:600;color:var(--text)}.e-desc{font-size:12px;margin-top:5px}
-    .detail-back{margin-bottom:18px}.detail-grid{display:grid;grid-template-columns:1.3fr .7fr;gap:18px}.camera-frame{height:390px;background:#161719;position:relative;overflow:hidden;border-radius:12px}.camera-mock{position:absolute;inset:0;background:linear-gradient(135deg,#282a2e,#111214);display:grid;place-items:center;color:#777}.camera-mock div{text-align:center}.camera-mock svg{width:42px;height:42px;margin-bottom:8px}.camera-overlay{position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;z-index:2}.camera-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:3;cursor:crosshair}
+    .detail-back{margin-bottom:18px}.detail-grid{display:grid;grid-template-columns:1.3fr .7fr;gap:18px}.camera-frame{height:390px;background:#161719;position:relative;overflow:hidden;border-radius:12px}.camera-mock{position:absolute;inset:0;background:linear-gradient(135deg,#282a2e,#111214);display:grid;place-items:center;color:#777}.camera-mock div{text-align:center}.camera-mock svg{width:42px;height:42px;margin-bottom:8px}.camera-overlay{position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;z-index:2}.camera-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:3;cursor:crosshair}.camera-img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1}
     .bento{display:grid;grid-template-columns:1fr 1fr;gap:10px}.bento-item{border:1px solid var(--divider);border-radius:13px;padding:15px;display:flex;align-items:center;justify-content:space-between;min-height:100px}.b-label{font-size:11px;color:var(--muted)}.b-value{font-size:22px;font-weight:650;margin-top:7px}.b-icon{width:38px;height:38px;border-radius:11px;display:grid;place-items:center}.b-icon svg{width:20px;height:20px}
     .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.form-group{display:grid;gap:6px}.form-group label{font-size:12px;color:var(--muted);font-weight:550}.form-group.full{grid-column:1/-1}.range-row{display:flex;align-items:center;gap:12px}.range-row input{flex:1}.pill{display:inline-flex;align-items:center;gap:6px;background:var(--gray-tint);padding:6px 9px;border-radius:999px;font-size:12px;margin:3px}.pill button{border:0;background:transparent;padding:0;display:flex;color:var(--muted)}.pill svg{width:13px;height:13px}
     .action-row{display:flex;gap:8px;flex-wrap:wrap}.divider{height:1px;background:var(--divider);margin:22px 0}.settings-layout{display:grid;grid-template-columns:190px 1fr;gap:20px}.settings-nav{display:grid;align-content:start;gap:3px}.settings-nav button{border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:9px;color:var(--muted)}.settings-nav button.active{background:#e8e8ed;color:var(--text);font-weight:600}.settings-panel{display:none}.settings-panel.active{display:block}
@@ -71,7 +72,12 @@
         <button id="mobileMenuBtn" class="btn btn-secondary mobile-menu">☰</button>
         <div><div id="topbarCrumb" class="crumb">CIVIL / Home</div><div id="topbarTitle" class="top-title">Home</div></div>
       </div>
-      <div class="top-actions"><button class="btn btn-secondary" onclick="testAlert()">แจ้งเตือนทดสอบ</button><button class="btn btn-primary" onclick="setView('task')">+ Task</button></div>
+      <div class="top-actions">
+        <button class="btn btn-secondary" onclick="testAlert()">แจ้งเตือนทดสอบ</button>
+        <button class="btn btn-primary" onclick="setView('task')">+ Task</button>
+        <span id="navUserBox" style="display:flex;align-items:center;gap:8px;margin-left:8px;font-size:13px;color:var(--muted)"></span>
+        <button class="btn btn-secondary btn-sm" onclick="logout()">ออกจากระบบ</button>
+      </div>
     </header>
 
     <div class="content">
@@ -92,7 +98,7 @@
       <!-- TASK -->
       <section id="view-task" class="view">
         <div id="view-task-list" class="active">
-          <div class="section-head"><div><h2>Tasks</h2><p>จัดการงานและพื้นที่ตรวจจับ</p></div><button class="btn btn-primary" onclick="openModal('<div class=&quot;modal-header&quot;><h3>เพิ่ม Task</h3><button class=&quot;modal-close&quot; onclick=&quot;closeModal()&quot;>×</button></div><div class=&quot;modal-body&quot;><div class=&quot;form-group&quot;><label>ชื่องาน</label><input id=&quot;newTaskName&quot; class=&quot;input&quot; placeholder=&quot;เช่น อาคาร A ชั้น 3&quot;></div></div><div class=&quot;modal-foot&quot;><button class=&quot;btn btn-secondary&quot; onclick=&quot;closeModal()&quot;>ยกเลิก</button><button class=&quot;btn btn-primary&quot; onclick=&quot;toast(\'ฟังก์ชันเพิ่ม Task จะเชื่อม Backend ภายหลัง\',\'success\');closeModal()&quot;>เพิ่ม Task</button></div>')">+ เพิ่ม Task</button></div>
+          <div class="section-head"><div><h2>Tasks</h2><p>จัดการงานและพื้นที่ตรวจจับ</p></div><button class="btn btn-primary" onclick="openAddTaskModal()">+ เพิ่ม Task</button></div>
           <div class="card"><div class="card-head"><div class="toolbar"><input id="taskSearchInput" class="input search" placeholder="ค้นหาชื่องาน / Zone"><div class="tabs">
             <button class="tab-btn task-filter-btn active" data-filter="all">ทั้งหมด</button><button class="tab-btn task-filter-btn" data-filter="running">กำลังทำ</button><button class="tab-btn task-filter-btn" data-filter="pause">พัก</button><button class="tab-btn task-filter-btn" data-filter="finished">เสร็จสิ้น</button>
           </div></div></div><div class="table-wrap"><table><thead><tr><th>ชื่องาน</th><th>Zone</th><th>ประเภทอิฐ</th><th>แรงงาน</th><th>ความคืบหน้า</th><th>สถานะ</th><th></th></tr></thead><tbody id="taskTableBody"></tbody></table></div></div>
@@ -104,19 +110,33 @@
           <div id="tdBento" class="bento" style="margin-bottom:18px"></div>
           <div class="detail-grid">
             <div class="card"><div class="card-head"><h3>Live Camera / ROI</h3><div class="action-row"><button class="btn btn-secondary btn-sm" onclick="roiUndo()">Undo</button><button class="btn btn-secondary btn-sm" onclick="roiClear()">Clear</button><button class="btn btn-primary btn-sm" onclick="roiClose()">ปิด ROI</button></div></div>
-              <div class="card-body"><div class="camera-frame"><div class="camera-mock"><div>Camera Preview<br><small>Mock stream</small></div></div><div class="camera-overlay"><span class="badge badge-live">AI CAMERA</span><span class="badge badge-finished">Click เพื่อวาด ROI</span></div><canvas id="roiCanvas" class="camera-canvas"></canvas></div></div>
+              <div class="card-body">
+                <div class="action-row" style="align-items:center;margin-bottom:12px;gap:10px">
+                  <select id="tdCameraSelect" class="input" style="max-width:280px" onchange="setTaskCamera(this.value)"></select>
+                  <button class="btn btn-secondary btn-sm" onclick="refreshTaskCamera()">รีเฟรชภาพ</button>
+                  <span id="tdCameraLiveState" style="font-size:12px;color:var(--muted)"></span>
+                </div>
+                <div class="camera-frame">
+                  <div class="camera-mock" id="tdCameraMock"><div>ยังไม่ได้เลือกกล้อง<br><small>เลือก Source ด้านบนเพื่อดูภาพสด</small></div></div>
+                  <img id="tdCameraImg" class="camera-img" style="display:none">
+                  <div class="camera-overlay"><span class="badge badge-live">AI CAMERA</span><span class="badge badge-finished">Click เพื่อวาด ROI</span></div>
+                  <canvas id="roiCanvas" class="camera-canvas"></canvas>
+                  <canvas id="bboxCanvas" class="camera-canvas" style="pointer-events:none"></canvas>
+                </div>
+                <p class="cell-muted" style="font-size:12px;margin-top:8px">ระบบตรวจจับต่อเนื่องอัตโนมัติ (realtime) ทันทีที่ Task อยู่สถานะ "กำลังดำเนินการ" มีกล้อง และวาด ROI แล้ว — ไม่ต้องกดปุ่มตรวจจับเอง กรอบสีเขียวคือกล่องที่ AI ตรวจพบล่าสุด</p>
+              </div>
             </div>
             <div class="card"><div class="card-head"><h3>Task Information</h3></div><div class="card-body">
               <div class="form-grid">
                 <div class="form-group full"><label>ชื่องาน</label><input id="tiName" class="input"></div>
                 <div class="form-group"><label>Zone</label><input id="tiZone" class="input"></div>
-                <div class="form-group"><label>ประเภทอิฐ</label><select id="tiBrickType" class="select"></select></div>
+                <div class="form-group"><label>ประเภทอิฐ (Profile)</label><select id="tiBrickType" class="select"></select></div>
+                <div class="form-group"><label>เป้าหมายพื้นที่ (ตร.ม.)</label><input id="tiExpectedArea" type="number" min="1" step="1" class="input"></div>
               </div>
               <div class="divider"></div><div class="form-group"><label>แรงงานในงาน</label><div id="tdWorkerPills"></div><select id="tdWorkerSelect" class="select"></select></div>
               <div class="divider"></div><div class="form-grid"><div class="form-group"><label>เริ่มงาน</label><input id="schStart" type="time" class="input"></div><div class="form-group"><label>เลิกงาน</label><input id="schEnd" type="time" class="input"></div><div class="form-group"><label>เริ่มพัก</label><input id="schBreakStart" type="time" class="input"></div><div class="form-group"><label>จบพัก</label><input id="schBreakEnd" type="time" class="input"></div></div>
               <div class="divider"></div><div class="form-group"><label>AI Confidence <span id="aiConfidenceVal"></span></label><div class="range-row"><input id="aiConfidence" type="range" min="50" max="99"><span class="text-mono">%</span></div></div>
-              <div class="form-group" style="margin-top:14px"><label>Snapshot ทุก</label><select id="aiSnapshotInterval" class="select"><option value="5">5 นาที</option><option value="15">15 นาที</option><option value="30">30 นาที</option><option value="60">60 นาที</option></select></div>
-              <div class="divider"></div><div class="action-row"><button id="actStart" class="btn btn-primary" onclick="setTaskStatus('running')">เริ่มตรวจจับ</button><button id="actPause" class="btn btn-secondary" onclick="setTaskStatus('pause')">พัก</button><button id="actStop" class="btn btn-secondary" onclick="setTaskStatus('finished')">หยุด</button><button class="btn btn-secondary" onclick="saveTaskInfo()">บันทึก</button></div>
+              <div class="divider"></div><div class="action-row"><button id="actStart" class="btn btn-primary" onclick="setTaskStatus('running')">เริ่มตรวจจับ</button><button id="actPause" class="btn btn-secondary" onclick="setTaskStatus('pause')">พัก</button><button id="actStop" class="btn btn-secondary" onclick="setTaskStatus('finished')">หยุด</button><button class="btn btn-secondary" onclick="saveTaskInfo()">บันทึก</button><button class="btn btn-danger" style="margin-left:auto" onclick="deleteTaskItem(currentTaskId)">ลบ Task</button></div>
             </div></div>
           </div>
         </div>
@@ -158,15 +178,60 @@
             <button data-stab="worker" onclick="setSettingsTab('worker')">Workers</button>
             <button data-stab="brick" onclick="setSettingsTab('brick')">Brick Types</button>
             <button data-stab="users" onclick="setSettingsTab('users')">Users</button>
+            <button data-stab="roles" onclick="setSettingsTab('roles')">Roles & Permissions</button>
             <button data-stab="alert" onclick="setSettingsTab('alert')">Alerts</button>
             <button data-stab="storage" onclick="setSettingsTab('storage')">Storage</button>
             <button data-stab="system" onclick="setSettingsTab('system')">System</button>
           </div>
           <div>
-            <div id="panel-camera" class="settings-panel active"><div class="card"><div class="card-head"><h3>Camera Connection</h3></div><div class="card-body"><div class="form-grid"><div class="form-group"><label>Camera URL</label><input class="input" placeholder="rtsp://camera-address/stream"></div><div class="form-group"><label>Zone</label><input class="input" placeholder="Zone A1"></div></div><div class="divider"></div><button class="btn btn-primary" onclick="testCameraConnection()">ทดสอบการเชื่อมต่อ</button></div></div></div>
+            <div id="panel-camera" class="settings-panel active">
+              <div class="card">
+                <div class="card-head"><h3>เพิ่มกล้องใหม่</h3></div>
+                <div class="card-body">
+                  <div class="form-grid">
+                    <div class="form-group"><label>ชื่อกล้อง</label><input id="cameraNameInput" class="input" placeholder="เช่น กล้อง Zone A1"></div>
+                    <div class="form-group"><label>Zone</label><input id="cameraZoneInput" class="input" placeholder="Zone A1"></div>
+                    <div class="form-group" style="grid-column:1/-1"><label>Camera URL (RTSP)</label><input id="cameraUrlInput" class="input" placeholder="rtsp://user:pass@camera-address:554/stream"></div>
+                  </div>
+                  <div class="divider"></div>
+                  <div class="action-row" style="align-items:center;gap:10px;flex-wrap:wrap">
+                    <button id="testCameraBtn" class="btn btn-secondary" onclick="testCameraConnection()">ทดสอบการเชื่อมต่อ</button>
+                    <button id="previewCameraBtn" class="btn btn-secondary" onclick="previewAdHocSnapshot()">ดูภาพตัวอย่าง</button>
+                    <button id="saveCameraBtn" class="btn btn-primary" onclick="submitAddCamera()">+ บันทึกกล้องนี้</button>
+                    <span id="cameraTestResult" style="font-size:12px;color:var(--muted)"></span>
+                  </div>
+                  <div id="cameraTestDetail" class="setting-note" style="display:none;margin-top:12px"></div>
+                  <div id="cameraPreviewWrap" style="display:none;margin-top:14px">
+                    <div class="camera-frame" style="height:220px">
+                      <img id="cameraPreviewImg" class="camera-img" style="display:none">
+                      <div class="camera-mock" id="cameraPreviewMock"><div>กำลังดึงภาพตัวอย่าง...</div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" style="margin-top:18px">
+                <div class="card-head"><h3>รายการกล้องทั้งหมด</h3><button class="btn btn-secondary btn-sm" onclick="loadCameraList()">รีเฟรชรายการ</button></div>
+                <div class="card-body">
+                  <div id="cameraListWrap" class="table-wrap">
+                    <table class="table">
+                      <thead><tr><th>ชื่อกล้อง</th><th>Zone</th><th>URL</th><th>สถานะ</th><th></th></tr></thead>
+                      <tbody id="cameraListBody"><tr><td colspan="5"><div class="empty-state"><div class="e-title">ยังไม่มีกล้อง</div></div></td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div id="panel-worker" class="settings-panel"><div class="card"><div class="card-head"><h3>Workers</h3></div><div class="card-body"><div class="form-grid"><input id="newWorkerName" class="input" placeholder="ชื่อแรงงาน"><input id="newWorkerRole" class="input" placeholder="ตำแหน่ง"><button class="btn btn-primary" onclick="addWorkerMaster()">+ เพิ่มแรงงาน</button></div><div class="divider"></div><div id="workerListBody"></div></div></div></div>
-            <div id="panel-brick" class="settings-panel"><div class="card"><div class="card-head"><h3>Brick Types</h3></div><div class="card-body"><div class="toolbar"><input id="newBrickName" class="input" placeholder="ชื่อประเภทอิฐ"><button class="btn btn-primary" onclick="addBrickType()">+ เพิ่ม</button></div><div class="divider"></div><div id="brickListBody"></div></div></div></div>
-            <div id="panel-users" class="settings-panel"><div class="card"><div class="card-head"><h3>Users</h3><button class="btn btn-primary" onclick="openAddUserModal()">+ เพิ่มผู้ใช้งาน</button></div><div class="table-wrap"><table><thead><tr><th>ชื่อ</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="usersTableBody"></tbody></table></div></div></div>
+            <div id="panel-brick" class="settings-panel"><div class="card"><div class="card-head"><h3>Brick Types</h3></div><div class="card-body"><p class="cell-muted" style="font-size:12.5px;margin-bottom:10px">กำหนดว่าอิฐแต่ละประเภท นับกี่ "บล็อก" เท่ากับพื้นที่ 1 ตารางเมตร (ใช้คำนวณพื้นที่จากผล AI detection อัตโนมัติ)</p><div class="toolbar"><input id="newBrickName" class="input" placeholder="ชื่อประเภทอิฐ"><input id="newBrickRatio" type="number" min="0.01" step="0.01" class="input" style="max-width:160px" placeholder="บล็อก/ตร.ม. เช่น 12.5"><button class="btn btn-primary" onclick="addBrickType()">+ เพิ่ม</button></div><div class="divider"></div><div id="brickListBody"></div></div></div></div>
+            <div id="panel-users" class="settings-panel"><div class="card"><div class="card-head"><h3>Users</h3><button class="btn btn-primary" onclick="openAddUserModal()">+ เพิ่มผู้ใช้งาน</button></div><div class="card-body"><div id="usersListBody"></div></div></div></div>
+            <div id="panel-roles" class="settings-panel"><div class="card">
+              <div class="card-head"><h3>Roles & Permissions</h3></div>
+              <div class="card-body">
+                <p class="cell-muted" style="font-size:12.5px;margin-bottom:10px">Role มี 3 แบบคงที่ (Admin/Engineer/Viewer) เพิ่มหรือลบ Role ไม่ได้ — ปรับได้เฉพาะสิทธิ์เข้าเมนู/หน้าของแต่ละ Role</p>
+                <div class="table-wrap"><table><thead><tr><th>Role</th><th>Home</th><th>Task</th><th>Dashboard</th><th>Reports</th><th>Logs</th><th>Settings</th></tr></thead><tbody id="rolesTableBody"></tbody></table></div>
+              </div>
+            </div></div>
             <div id="panel-alert" class="settings-panel"><div class="card"><div class="card-head"><h3>Alert Configuration</h3></div><div class="card-body"><div class="form-group"><label>Discord Webhook</label><input class="input" placeholder="https://discord.com/api/webhooks/..."></div><div class="divider"></div><label><input type="checkbox" checked> แจ้งเตือนกล้อง Offline</label><br><label><input type="checkbox" checked> แจ้งเตือน Server Offline</label><br><label><input type="checkbox" checked> แจ้งเตือน AI หยุดทำงาน</label><br><label><input type="checkbox"> แจ้งเตือน Internet Down</label><br><label><input type="checkbox" checked> แจ้งเตือนเมื่อไม่พบภาพ</label><div class="divider"></div><button class="btn btn-secondary" onclick="testAlert()">ส่งการแจ้งเตือนทดสอบ</button></div></div></div>
             <div id="panel-storage" class="settings-panel"><div class="card"><div class="card-head"><h3>Storage</h3></div><div class="card-body"><p>ใช้ไป <strong>312 GB</strong> จาก 500 GB</p><div class="storage-bar"><div style="width:62.4%"></div></div><div class="divider"></div><label><input id="storageAutoDelete" type="checkbox" checked> ลบ Snapshot เก่าอัตโนมัติ</label><div class="form-group" style="margin-top:14px"><label>เก็บข้อมูลย้อนหลัง</label><select class="select"><option>30 วัน</option><option selected>60 วัน</option><option>90 วัน</option></select></div><div class="divider"></div><button class="btn btn-secondary" onclick="runBackup()">สำรองข้อมูล</button></div></div></div>
             <div id="panel-system" class="settings-panel"><div class="card"><div class="card-head"><h3>System</h3></div><div class="card-body"><div class="form-grid"><div class="form-group"><label>Timezone</label><input class="input" value="Asia/Bangkok (GMT+7)" readonly></div><div class="form-group"><label>Version</label><input class="input" value="v0.9.2-beta" readonly></div></div></div></div></div>

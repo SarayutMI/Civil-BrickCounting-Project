@@ -3,6 +3,27 @@
    Front-end prototype logic (mock data, no backend yet)
 =================================================================== */
 
+/* ---------------- AUTH GUARD (mockup login, ดู /api/login ใน server.js) ---------------- */
+// เช็ค session ทันทีตอนโหลดสคริปต์ ก่อนหน้าเว็บ render อะไร — ถ้ายังไม่ login ให้เด้งไป login.html
+(function requireAuth(){
+  try{
+    const raw = localStorage.getItem('civil_user');
+    if(!raw){ location.href = './login.html'; return; }
+    JSON.parse(raw);
+  }catch(_){
+    localStorage.removeItem('civil_user');
+    location.href = './login.html';
+  }
+})();
+function currentUser(){
+  try{ return JSON.parse(localStorage.getItem('civil_user')); }
+  catch(_){ return null; }
+}
+function logout(){
+  localStorage.removeItem('civil_user');
+  location.href = './login.html';
+}
+
 /* ---------------- ICONS (inline SVG, stroke=currentColor) ---------------- */
 const ICON = {
   home:  `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9"/></svg>`,
@@ -54,52 +75,8 @@ const DB = {
     { id:'u2', name:'วิศวกร กิจงาน', email:'engineer@civil.co', role:'Engineer' },
     { id:'u3', name:'ผู้บริหาร ดูงาน', email:'viewer@civil.co', role:'Viewer' },
   ],
-  tasks: [
-    {
-      id:'t1', name:'อาคาร A ชั้น 1 — ผนังด้านทิศเหนือ', zone:'Zone A1', brickType:'bt1',
-      status:'running', workers:['w1','w2','w3'], area:118, expectedArea:200, blocks:1450,
-      cameraStatus:'live', lastUpdate:'2 นาทีที่แล้ว', confidence:75, snapshotInterval:30,
-      schedule:{ start:'08:00', breakStart:'12:00', breakEnd:'13:00', end:'17:00' },
-      roi:[[0.18,0.2],[0.82,0.18],[0.86,0.78],[0.14,0.82]],
-      progressSeries:[8,15,24,30,38,47,55,60],
-    },
-    {
-      id:'t2', name:'อาคาร A ชั้น 2 — ผนังด้านทิศใต้', zone:'Zone A2', brickType:'bt2',
-      status:'pause', workers:['w4'], area:64, expectedArea:180, blocks:780,
-      cameraStatus:'connecting', lastUpdate:'14 นาทีที่แล้ว', confidence:70, snapshotInterval:30,
-      schedule:{ start:'08:00', breakStart:'12:00', breakEnd:'13:00', end:'17:00' },
-      roi:[], progressSeries:[5,10,14,20,26,30,33,36],
-    },
-    {
-      id:'t3', name:'อาคาร B ชั้น 1 — เสาและผนังรับน้ำหนัก', zone:'Zone B1', brickType:'bt3',
-      status:'running', workers:['w5','w6'], area:150, expectedArea:210, blocks:1980,
-      cameraStatus:'live', lastUpdate:'ไม่ถึงนาทีที่แล้ว', confidence:80, snapshotInterval:15,
-      schedule:{ start:'07:30', breakStart:'12:00', breakEnd:'13:00', end:'16:30' },
-      roi:[[0.12,0.15],[0.88,0.15],[0.88,0.85],[0.12,0.85]],
-      progressSeries:[10,22,33,44,52,60,66,71],
-    },
-    {
-      id:'t4', name:'อาคาร B ชั้น 2 — ผนังกั้นห้อง', zone:'Zone B2', brickType:'bt1',
-      status:'finished', workers:['w1'], area:96, expectedArea:96, blocks:1120,
-      cameraStatus:'disconnect', lastUpdate:'2 วันที่แล้ว', confidence:75, snapshotInterval:30,
-      schedule:{ start:'08:00', breakStart:'12:00', breakEnd:'13:00', end:'17:00' },
-      roi:[], progressSeries:[20,40,55,68,80,90,96,100],
-    },
-    {
-      id:'t5', name:'อาคาร C ชั้น 1 — ผนังด้านหน้า', zone:'Zone C1', brickType:'bt2',
-      status:'running', workers:['w2','w3','w4'], area:40, expectedArea:160, blocks:410,
-      cameraStatus:'live', lastUpdate:'5 นาทีที่แล้ว', confidence:72, snapshotInterval:30,
-      schedule:{ start:'08:00', breakStart:'12:00', breakEnd:'13:00', end:'17:00' },
-      roi:[], progressSeries:[3,7,11,15,19,22,24,25],
-    },
-    {
-      id:'t6', name:'อาคาร C ชั้น 2 — ผนังกันไฟ', zone:'Zone C2', brickType:'bt3',
-      status:'finished', workers:['w5'], area:110, expectedArea:110, blocks:1340,
-      cameraStatus:'disconnect', lastUpdate:'5 วันที่แล้ว', confidence:75, snapshotInterval:30,
-      schedule:{ start:'08:00', breakStart:'12:00', breakEnd:'13:00', end:'17:00' },
-      roi:[], progressSeries:[15,35,50,65,78,88,95,100],
-    },
-  ],
+  tasks: [], // โหลดจริงจาก backend ผ่าน loadTasks() — ดู /api/tasks
+  roles: [], // โหลดจริงจาก backend ผ่าน loadRoles() — ดู /api/roles
   logs: [
     { time:'2026-08-24 09:12', type:'camera', level:'info', message:'กล้อง Zone A1 เชื่อมต่อสำเร็จ' },
     { time:'2026-08-24 09:00', type:'task', level:'info', message:'เริ่มการตรวจจับ Task "อาคาร A ชั้น 1"' },
@@ -122,12 +99,123 @@ let currentTaskId = null;
 let roiPoints = [];
 let roiDrawing = false;
 
+/* ================= BRICK TYPES — BACKEND SYNC (blocksPerSqm) ================= */
+// โหลดประเภทอิฐจริงจาก backend (persist ลง brickTypes.json) แทน mock เดิม
+async function loadBrickTypes(){
+  try{
+    const res = await fetch('/api/bricktypes');
+    DB.brickTypes = await res.json();
+  }catch(err){
+    console.error('โหลดประเภทอิฐไม่สำเร็จ', err);
+    toast('เชื่อมต่อ backend ไม่สำเร็จ — ไม่สามารถโหลดประเภทอิฐได้');
+  }
+}
+
 /* ---------------- HELPERS ---------------- */
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
 const byId = (id) => DB.tasks.find(t => t.id === id);
 const brickName = (id) => (DB.brickTypes.find(b => b.id===id) || {}).name || '—';
 const workerName = (id) => (DB.workersMaster.find(w => w.id===id) || {}).name || '—';
+
+/* ================= TASKS — BACKEND SYNC ================= */
+// ดึงรายการ Task จริงจาก backend (persist ลง tasks.json ข้ามการรีสตาร์ท)
+async function loadTasks(){
+  try{
+    const res = await fetch('/api/tasks');
+    DB.tasks = await res.json();
+  }catch(err){
+    console.error('โหลด Task ไม่สำเร็จ', err);
+    DB.tasks = [];
+    toast('เชื่อมต่อ backend ไม่สำเร็จ — ไม่สามารถโหลด Task ได้');
+  }
+}
+// ส่งการแก้ไขบางส่วนของ task กลับไป persist ที่ backend
+async function patchTask(id, partial){
+  try{
+    const res = await fetch(`/api/tasks/${id}`, {
+      method:'PUT',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(partial),
+    });
+    if(!res.ok){
+      const data = await res.json().catch(()=>({}));
+      toast(data.message || 'บันทึกไม่สำเร็จ');
+      return null;
+    }
+    return await res.json();
+  }catch(err){
+    toast('เชื่อมต่อ backend ไม่สำเร็จ');
+    return null;
+  }
+}
+function openAddTaskModal(){
+  const brickOpts = DB.brickTypes.map(b=>`<option value="${b.id}">${b.name}</option>`).join('');
+  const camOpts = `<option value="">— ไม่เลือกกล้อง (เลือกทีหลังได้) —</option>` +
+    CAMERAS.map(c=>`<option value="${c.id}">${c.name}${c.zone ? ' — '+c.zone : ''}</option>`).join('');
+  openModal(`
+    <div class="modal-header"><h3>เพิ่ม Task ใหม่</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>ชื่องาน</label><input id="newTaskName" class="input" placeholder="เช่น อาคาร A ชั้น 3"></div>
+      <div class="form-group"><label>Zone</label><input id="newTaskZone" class="input" placeholder="เช่น Zone A3"></div>
+      <div class="form-group"><label>ประเภทอิฐ</label><select id="newTaskBrickType" class="select">${brickOpts}</select></div>
+      <div class="form-group"><label>เลือกกล้อง (Source)</label><select id="newTaskCamera" class="select">${camOpts}</select></div>
+      <div class="form-group"><label>พื้นที่เป้าหมาย (m²)</label><input id="newTaskExpectedArea" type="number" class="input" value="100" min="1"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="closeModal()">ยกเลิก</button>
+      <button id="submitNewTaskBtn" class="btn btn-primary" onclick="submitAddTask()">เพิ่ม Task</button>
+    </div>
+  `);
+}
+async function submitAddTask(){
+  const name = $('#newTaskName')?.value.trim();
+  const zone = $('#newTaskZone')?.value.trim();
+  const brickType = $('#newTaskBrickType')?.value;
+  const cameraId = $('#newTaskCamera')?.value || null;
+  const expectedArea = parseInt($('#newTaskExpectedArea')?.value, 10) || 100;
+  const btn = $('#submitNewTaskBtn');
+  if(!name){ toast('กรุณากรอกชื่องาน'); return; }
+  try{
+    if(btn){ btn.disabled = true; btn.textContent = 'กำลังบันทึก...'; }
+    const res = await fetch('/api/tasks', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ name, zone, brickType, cameraId, expectedArea }),
+    });
+    const data = await res.json();
+    if(res.ok){
+      toast('เพิ่ม Task สำเร็จ','success');
+      closeModal();
+      await loadTasks();
+      renderTaskList();
+      renderHome();
+      openTaskDetail(data.id);
+    } else {
+      toast(data.message || 'เพิ่ม Task ไม่สำเร็จ');
+    }
+  }catch(err){
+    toast('เชื่อมต่อ backend ไม่สำเร็จ');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = 'เพิ่ม Task'; }
+  }
+}
+async function deleteTaskItem(id){
+  if(!confirm('ยืนยันลบ Task นี้? การลบไม่สามารถย้อนกลับได้')) return;
+  try{
+    const res = await fetch(`/api/tasks/${id}`, { method:'DELETE' });
+    const data = await res.json();
+    if(res.ok){
+      toast('ลบ Task แล้ว','success');
+      await loadTasks();
+      backToTaskList();
+    } else {
+      toast(data.message || 'ลบ Task ไม่สำเร็จ');
+    }
+  }catch(err){
+    toast('เชื่อมต่อ backend ไม่สำเร็จ');
+  }
+}
 
 function statusBadge(status){
   const map = { running:['badge-running','กำลังดำเนินการ'], pause:['badge-pause','พัก'], finished:['badge-finished','เสร็จสิ้น'] };
@@ -154,8 +242,54 @@ function openModal(html){
 }
 function closeModal(){ $('#modalOverlay').classList.remove('open'); }
 
+/* ---------------- ROLES & PERMISSIONS ---------------- */
+// โหลด Role list จาก backend แล้วเก็บสิทธิ์ของ user ที่ login อยู่ไว้ใน currentPermissions
+let currentPermissions = null;
+async function loadRoles(){
+  try{
+    const res = await fetch('/api/roles');
+    DB.roles = await res.json();
+  }catch(err){
+    console.error('โหลด Role ไม่สำเร็จ', err);
+    toast('เชื่อมต่อ backend ไม่สำเร็จ — ไม่สามารถโหลด Role ได้');
+  }
+}
+async function loadUsers(){
+  try{
+    const res = await fetch('/api/users');
+    DB.users = await res.json();
+  }catch(err){
+    console.error('โหลดผู้ใช้งานไม่สำเร็จ', err);
+    toast('เชื่อมต่อ backend ไม่สำเร็จ — ไม่สามารถโหลดผู้ใช้งานได้');
+  }
+}
+// ซ่อนเมนูฝั่งซ้ายตามสิทธิ์ของ role ผู้ใช้ที่ login อยู่ + แสดงชื่อ/role ที่ topbar
+function applyPermissionGate(){
+  const user = currentUser();
+  if(!user) return;
+  const role = DB.roles.find(r=>r.name===user.role);
+  currentPermissions = role ? role.permissions : PAGE_KEYS_ALL_TRUE();
+  $$('.nav-item').forEach(btn=>{
+    const allowed = currentPermissions[btn.dataset.view] !== false;
+    btn.style.display = allowed ? '' : 'none';
+  });
+  const box = $('#navUserBox');
+  if(box) box.textContent = `${user.name} · ${user.role}`;
+  // ถ้าหน้าปัจจุบันไม่มีสิทธิ์ (เช่นถูกแก้สิทธิ์ระหว่างใช้งาน) ให้เด้งกลับ Home
+  const activeBtn = $('.nav-item.active');
+  if(activeBtn && currentPermissions[activeBtn.dataset.view]===false) setView('home');
+}
+function PAGE_KEYS_ALL_TRUE(){
+  return { home:true, task:true, dashboard:true, reports:true, logs:true, settings:true };
+}
+
 /* ---------------- NAVIGATION ---------------- */
 function setView(viewName){
+  if(currentPermissions && currentPermissions[viewName]===false){
+    toast('คุณไม่มีสิทธิ์เข้าถึงเมนูนี้');
+    return;
+  }
+  if(viewName!=='task') stopTaskCameraStream();
   $$('.view').forEach(v => v.classList.remove('active'));
   $(`#view-${viewName}`).classList.add('active');
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view===viewName));
@@ -250,8 +384,11 @@ function openTaskDetail(id){
   $('#view-task-list').classList.remove('active');
   $('#view-task-detail').classList.add('active');
   paintTaskDetail();
+  startTaskDetailPolling();
 }
 function backToTaskList(){
+  stopTaskCameraStream();
+  stopTaskDetailPolling();
   $('#view-task-detail').classList.remove('active');
   $('#view-task-list').classList.add('active');
   renderTaskList();
@@ -266,17 +403,20 @@ function paintTaskDetail(){
   $('#tdStatusBadge').innerHTML = statusBadge(t.status);
   $('#tdUpdated').textContent = `อัปเดตล่าสุด ${t.lastUpdate}`;
 
+  const bt = DB.brickTypes.find(b=>b.id===t.brickType);
+  const ratio = bt?.blocksPerSqm ?? null;
   $('#tdBento').innerHTML = `
     ${bentoItem(ICON.users,'แรงงานที่ตรวจพบ', t.workers.length+' คน', 'var(--accent-tint)','var(--accent)')}
     ${bentoItem(ICON.area,'พื้นที่ที่ตรวจจับได้', t.area+' m²', 'var(--green-tint)','var(--green)')}
     ${bentoItem(ICON.percent,'อัตราความสำเร็จ', Math.round(t.area/t.expectedArea*100)+'%', 'var(--amber-tint)','var(--amber)')}
-    ${bentoItem(ICON.block,'จำนวนบล็อกทั้งหมด', t.blocks.toLocaleString(), 'var(--gray-tint)','var(--muted)')}
+    ${bentoItem(ICON.block,'จำนวนบล็อกทั้งหมด', t.blocks.toLocaleString()+(ratio?` (÷${ratio}/m²)`:''), 'var(--gray-tint)','var(--muted)')}
   `;
 
   // Task info form
   $('#tiName').value = t.name;
   $('#tiZone').value = t.zone;
-  $('#tiBrickType').innerHTML = DB.brickTypes.map(b=>`<option value="${b.id}" ${b.id===t.brickType?'selected':''}>${b.name}</option>`).join('');
+  $('#tiBrickType').innerHTML = DB.brickTypes.map(b=>`<option value="${b.id}" ${b.id===t.brickType?'selected':''}>${b.name} — ${b.blocksPerSqm} ก้อน/ตร.ม.</option>`).join('');
+  $('#tiExpectedArea').value = t.expectedArea;
 
   // Workers
   renderTaskWorkers(t);
@@ -290,7 +430,6 @@ function paintTaskDetail(){
   // AI setting
   $('#aiConfidence').value = t.confidence;
   $('#aiConfidenceVal').textContent = t.confidence + '%';
-  $('#aiSnapshotInterval').value = t.snapshotInterval;
 
   // Action buttons state
   $('#actStart').disabled = t.status==='running';
@@ -300,6 +439,68 @@ function paintTaskDetail(){
   // ROI canvas
   roiPoints = (t.roi || []).map(p=>[...p]);
   drawROI();
+  drawBBoxes(t.lastDetection);
+
+  // Live camera binding
+  populateTaskCameraSelect();
+}
+// อัปเดตเฉพาะส่วนที่เป็นผล AI แบบ realtime (bento/badge/bbox) ไม่แตะฟอร์มที่ผู้ใช้กำลังแก้อยู่
+function refreshTaskLiveFields(t){
+  if(!t || t.id !== currentTaskId) return;
+  $('#tdCameraBadge').innerHTML = cameraBadge(t.cameraStatus);
+  $('#tdStatusBadge').innerHTML = statusBadge(t.status);
+  $('#tdUpdated').textContent = `อัปเดตล่าสุด ${t.lastUpdate}`;
+  const bt = DB.brickTypes.find(b=>b.id===t.brickType);
+  const ratio = bt?.blocksPerSqm ?? null;
+  $('#tdBento').innerHTML = `
+    ${bentoItem(ICON.users,'แรงงานที่ตรวจพบ', t.workers.length+' คน', 'var(--accent-tint)','var(--accent)')}
+    ${bentoItem(ICON.area,'พื้นที่ที่ตรวจจับได้', t.area+' m²', 'var(--green-tint)','var(--green)')}
+    ${bentoItem(ICON.percent,'อัตราความสำเร็จ', Math.round(t.area/t.expectedArea*100)+'%', 'var(--amber-tint)','var(--amber)')}
+    ${bentoItem(ICON.block,'จำนวนบล็อกทั้งหมด', t.blocks.toLocaleString()+(ratio?` (÷${ratio}/m²)`:''), 'var(--gray-tint)','var(--muted)')}
+  `;
+  drawBBoxes(t.lastDetection);
+}
+// วาดกรอบ (bbox) ที่ AI ตรวจพบล่าสุด ทับบนภาพกล้องสด — สีเขียว = อยู่ใน ROI, สีเทา = อยู่นอก ROI
+function drawBBoxes(lastDetection){
+  const canvas = $('#bboxCanvas');
+  if(!canvas) return;
+  const wrap = canvas.closest('.camera-frame');
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  if(!lastDetection || !Array.isArray(lastDetection.detections) || !lastDetection.image_width) return;
+  const { detections, image_width: iw, image_height: ih } = lastDetection;
+  detections.forEach(d=>{
+    const x = (d.x1/iw)*w, y = (d.y1/ih)*h;
+    const bw = ((d.x2-d.x1)/iw)*w, bh = ((d.y2-d.y1)/ih)*h;
+    ctx.strokeStyle = d.in_roi ? '#00C853' : 'rgba(148,163,184,0.7)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x,y,bw,bh);
+    ctx.fillStyle = d.in_roi ? '#00C853' : 'rgba(148,163,184,0.9)';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(`${Math.round(d.conf*100)}%`, x+2, Math.max(y-4,10));
+  });
+}
+// Auto-refresh: ดึงค่า Task ล่าสุดจาก backend มาอัปเดตหน้าจอแบบ realtime
+// (รองรับการตรวจจับต่อเนื่องที่ backend รันเองทุกรอบ ไม่ต้องกดปุ่ม)
+let taskDetailPollTimer = null;
+function startTaskDetailPolling(){
+  stopTaskDetailPolling();
+  taskDetailPollTimer = setInterval(async () => {
+    if(!currentTaskId || !$('#view-task-detail')?.classList.contains('active')) return;
+    try{
+      const res = await fetch(`/api/tasks/${currentTaskId}`);
+      if(!res.ok) return;
+      const fresh = await res.json();
+      const idx = DB.tasks.findIndex(x=>x.id===fresh.id);
+      if(idx>=0) DB.tasks[idx] = fresh; else DB.tasks.push(fresh);
+      refreshTaskLiveFields(fresh);
+    }catch(_){ /* เงียบไว้ — ไม่รบกวนผู้ใช้ระหว่างแก้ไขฟอร์ม */ }
+  }, 2000);
+}
+function stopTaskDetailPolling(){
+  if(taskDetailPollTimer){ clearInterval(taskDetailPollTimer); taskDetailPollTimer = null; }
 }
 function bentoItem(icon,label,value,bg,fg){
   return `<div class="bento-item"><div><div class="b-label">${label}</div><div class="b-value">${value}</div></div><div class="b-icon" style="background:${bg}; color:${fg};">${icon}</div></div>`;
@@ -311,42 +512,52 @@ function renderTaskWorkers(t){
   const available = DB.workersMaster.filter(w=>!t.workers.includes(w.id));
   $('#tdWorkerSelect').innerHTML = `<option value="">+ เพิ่มแรงงาน...</option>` + available.map(w=>`<option value="${w.id}">${w.name} — ${w.role}</option>`).join('');
 }
-function removeWorkerFromTask(wid){
+async function removeWorkerFromTask(wid){
   const t = byId(currentTaskId);
   t.workers = t.workers.filter(w=>w!==wid);
   renderTaskWorkers(t);
+  await patchTask(t.id, { workers: t.workers });
   toast('นำแรงงานออกจากงานแล้ว');
 }
-function addWorkerToTask(wid){
+async function addWorkerToTask(wid){
   if(!wid) return;
   const t = byId(currentTaskId);
   if(!t.workers.includes(wid)) t.workers.push(wid);
   renderTaskWorkers(t);
   $('#tdWorkerSelect').value = '';
+  await patchTask(t.id, { workers: t.workers });
   toast('เพิ่มแรงงานเข้างานแล้ว');
 }
-function saveTaskInfo(){
+async function saveTaskInfo(){
   const t = byId(currentTaskId);
   t.name = $('#tiName').value || t.name;
   t.zone = $('#tiZone').value || t.zone;
   t.brickType = $('#tiBrickType').value;
+  t.expectedArea = parseFloat($('#tiExpectedArea').value) || t.expectedArea;
   t.schedule = {
     start:$('#schStart').value, breakStart:$('#schBreakStart').value,
     breakEnd:$('#schBreakEnd').value, end:$('#schEnd').value
   };
   t.confidence = parseInt($('#aiConfidence').value,10);
-  t.snapshotInterval = parseInt($('#aiSnapshotInterval').value,10);
   t.roi = roiPoints.map(p=>[...p]);
-  toast('บันทึกข้อมูล Task เรียบร้อยแล้ว','success');
-  $('#topbarTitle').textContent = t.name;
+  const saved = await patchTask(t.id, {
+    name:t.name, zone:t.zone, brickType:t.brickType, expectedArea:t.expectedArea, schedule:t.schedule,
+    confidence:t.confidence, roi:t.roi,
+  });
+  if(saved){
+    toast('บันทึกข้อมูล Task เรียบร้อยแล้ว (persist ลง tasks.json)','success');
+    $('#topbarTitle').textContent = t.name;
+    renderTaskList();
+  }
 }
-function setTaskStatus(status){
+async function setTaskStatus(status){
   const t = byId(currentTaskId);
   t.status = status;
   $('#tdStatusBadge').innerHTML = statusBadge(t.status);
   $('#actStart').disabled = t.status==='running';
   $('#actPause').disabled = t.status!=='running';
   $('#actStop').disabled = t.status==='finished';
+  await patchTask(t.id, { status });
   const label = { running:'เริ่มตรวจจับแล้ว', pause:'พักการตรวจจับแล้ว', finished:'หยุดการตรวจจับแล้ว' };
   toast(label[status] || 'อัปเดตสถานะแล้ว', 'success');
 }
@@ -534,6 +745,7 @@ function setSettingsTab(tab){
   if(tab==='worker') renderSettingsWorkers();
   if(tab==='brick') renderSettingsBrickTypes();
   if(tab==='users') renderSettingsUsers();
+  if(tab==='roles') renderSettingsRoles();
 }
 function renderSettingsWorkers(){
   $('#workerListBody').innerHTML = DB.workersMaster.map(w=>`
@@ -563,47 +775,90 @@ function removeWorkerMaster(id){
 }
 function renderSettingsBrickTypes(){
   $('#brickListBody').innerHTML = DB.brickTypes.map(b=>`
-    <span class="pill">${b.name} <button onclick="removeBrickType('${b.id}')">${ICON.x}</button></span>
-  `).join('');
+    <div class="list-row">
+      <div class="l-main">
+        <div><div class="l-name">${b.name}</div>
+          <div class="l-sub">
+            <input type="number" min="0.01" step="0.01" class="input" style="width:110px;display:inline-block"
+              value="${b.blocksPerSqm ?? 12.5}" onchange="updateBrickRatio('${b.id}', this.value)"> บล็อก / ตร.ม.
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="removeBrickType('${b.id}')">${ICON.trash}</button>
+    </div>
+  `).join('') || `<div class="cell-muted" style="font-size:13px;">ยังไม่มีประเภทอิฐ</div>`;
 }
-function addBrickType(){
+async function addBrickType(){
   const name = $('#newBrickName').value.trim();
+  const ratio = parseFloat($('#newBrickRatio')?.value) || 12.5;
   if(!name){ toast('กรุณากรอกชื่อประเภทอิฐ'); return; }
-  DB.brickTypes.push({ id:'bt'+Date.now(), name });
-  $('#newBrickName').value='';
-  renderSettingsBrickTypes();
-  toast('เพิ่มประเภทอิฐเรียบร้อยแล้ว','success');
+  try{
+    const res = await fetch('/api/bricktypes', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name, blocksPerSqm: ratio }),
+    });
+    const data = await res.json();
+    if(res.ok){
+      $('#newBrickName').value=''; if($('#newBrickRatio')) $('#newBrickRatio').value='';
+      await loadBrickTypes();
+      renderSettingsBrickTypes();
+      toast('เพิ่มประเภทอิฐเรียบร้อยแล้ว','success');
+    } else toast(data.message || 'เพิ่มไม่สำเร็จ');
+  }catch(err){ toast('เชื่อมต่อ backend ไม่สำเร็จ'); }
 }
-function removeBrickType(id){
-  DB.brickTypes = DB.brickTypes.filter(b=>b.id!==id);
-  renderSettingsBrickTypes();
-  toast('ลบประเภทอิฐแล้ว');
+async function updateBrickRatio(id, value){
+  const ratio = parseFloat(value);
+  if(!ratio || ratio<=0){ toast('จำนวนบล็อกต่อตารางเมตรต้องมากกว่า 0'); return; }
+  try{
+    const res = await fetch(`/api/bricktypes/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ blocksPerSqm: ratio }),
+    });
+    if(res.ok){ await loadBrickTypes(); toast('อัปเดตอัตราส่วนแล้ว','success'); }
+    else toast('อัปเดตไม่สำเร็จ');
+  }catch(err){ toast('เชื่อมต่อ backend ไม่สำเร็จ'); }
+}
+async function removeBrickType(id){
+  try{
+    const res = await fetch(`/api/bricktypes/${id}`, { method:'DELETE' });
+    if(res.ok){ await loadBrickTypes(); renderSettingsBrickTypes(); toast('ลบประเภทอิฐแล้ว'); }
+    else toast('ลบไม่สำเร็จ');
+  }catch(err){ toast('เชื่อมต่อ backend ไม่สำเร็จ'); }
 }
 function renderSettingsUsers(){
-  $('#usersTableBody').innerHTML = DB.users.map(u=>`
-    <tr>
-      <td class="cell-strong">${u.name}</td>
-      <td class="cell-muted">${u.email}</td>
-      <td><span class="badge badge-role">${u.role}</span></td>
-      <td><button class="btn btn-ghost btn-sm" onclick="removeUser('${u.id}')">${ICON.trash}</button></td>
-    </tr>
-  `).join('');
+  $('#usersListBody').innerHTML = DB.users.map(u=>`
+    <div class="list-row">
+      <div class="l-main">
+        <div class="l-avatar">${u.name.slice(0,1)}</div>
+        <div><div class="l-name">${u.name} <span class="badge badge-role">${u.role}</span></div><div class="l-sub">${u.username} · ${u.email || '—'}</div></div>
+      </div>
+      <div style="display:flex;gap:4px">
+        <button class="btn btn-ghost btn-sm" onclick="openEditUserModal('${u.id}')">${ICON.edit}</button>
+        <button class="btn btn-ghost btn-sm" onclick="removeUser('${u.id}')">${ICON.trash}</button>
+      </div>
+    </div>
+  `).join('') || `<div class="cell-muted" style="font-size:13px;">ยังไม่มีผู้ใช้งาน</div>`;
 }
-function removeUser(id){
-  DB.users = DB.users.filter(u=>u.id!==id);
-  renderSettingsUsers();
-  toast('ลบผู้ใช้งานแล้ว');
+async function removeUser(id){
+  if(!confirm('ยืนยันลบผู้ใช้งานนี้?')) return;
+  try{
+    const res = await fetch(`/api/users/${id}`, { method:'DELETE' });
+    const data = await res.json().catch(()=>({}));
+    if(res.ok){ await loadUsers(); renderSettingsUsers(); toast('ลบผู้ใช้งานแล้ว'); }
+    else toast(data.message || 'ลบไม่สำเร็จ');
+  }catch(err){ toast('เชื่อมต่อ backend ไม่สำเร็จ'); }
 }
 function openAddUserModal(){
+  const roleOpts = DB.roles.map(r=>`<option>${r.name}</option>`).join('');
   openModal(`
     <div class="modal-header"><h3>เพิ่มผู้ใช้งานใหม่</h3><button class="modal-close" onclick="closeModal()">${ICON.x}</button></div>
     <div class="modal-body">
       <div class="form-group"><label>ชื่อ-นามสกุล</label><input id="muName" class="input" placeholder="เช่น สมหญิง ใจงาม"></div>
       <div class="form-group"><label>อีเมล</label><input id="muEmail" class="input" placeholder="name@company.com"></div>
-      <div class="form-group"><label>สิทธิ์การใช้งาน</label>
-        <select id="muRole" class="select">
-          <option>Admin</option><option>Engineer</option><option selected>Viewer</option>
-        </select>
+      <div class="form-group"><label>Username (สำหรับ login)</label><input id="muUsername" class="input" placeholder="เช่น somying"></div>
+      <div class="form-group"><label>Password</label><input id="muPassword" type="password" class="input" placeholder="ตั้งรหัสผ่าน"></div>
+      <div class="form-group"><label>สิทธิ์การใช้งาน (Role)</label>
+        <select id="muRole" class="select">${roleOpts}</select>
       </div>
     </div>
     <div class="modal-foot">
@@ -612,20 +867,390 @@ function openAddUserModal(){
     </div>
   `);
 }
-function confirmAddUser(){
+async function confirmAddUser(){
   const name = $('#muName').value.trim();
   const email = $('#muEmail').value.trim();
+  const username = $('#muUsername').value.trim();
+  const password = $('#muPassword').value;
   const role = $('#muRole').value;
-  if(!name || !email){ toast('กรุณากรอกข้อมูลให้ครบถ้วน'); return; }
-  DB.users.push({ id:'u'+Date.now(), name, email, role });
-  closeModal();
-  renderSettingsUsers();
-  toast('เพิ่มผู้ใช้งานเรียบร้อยแล้ว','success');
+  if(!name || !username || !password){ toast('กรุณากรอกชื่อ, username และ password ให้ครบ'); return; }
+  try{
+    const res = await fetch('/api/users', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name, email, username, password, role }),
+    });
+    const data = await res.json();
+    if(res.ok){
+      closeModal();
+      await loadUsers();
+      renderSettingsUsers();
+      toast('เพิ่มผู้ใช้งานเรียบร้อยแล้ว','success');
+    } else toast(data.message || 'เพิ่มผู้ใช้งานไม่สำเร็จ');
+  }catch(err){ toast('เชื่อมต่อ backend ไม่สำเร็จ'); }
 }
-function testCameraConnection(){
+function openEditUserModal(id){
+  const u = DB.users.find(x=>x.id===id);
+  if(!u) return;
+  const roleOpts = DB.roles.map(r=>`<option ${r.name===u.role?'selected':''}>${r.name}</option>`).join('');
+  openModal(`
+    <div class="modal-header"><h3>แก้ไขผู้ใช้งาน</h3><button class="modal-close" onclick="closeModal()">${ICON.x}</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>ชื่อ-นามสกุล</label><input id="muName" class="input" value="${u.name}"></div>
+      <div class="form-group"><label>อีเมล</label><input id="muEmail" class="input" value="${u.email || ''}"></div>
+      <div class="form-group"><label>Username (สำหรับ login)</label><input id="muUsername" class="input" value="${u.username}"></div>
+      <div class="form-group"><label>Password (เว้นว่างไว้ถ้าไม่เปลี่ยน)</label><input id="muPassword" type="password" class="input" placeholder="••••••••"></div>
+      <div class="form-group"><label>สิทธิ์การใช้งาน (Role)</label>
+        <select id="muRole" class="select">${roleOpts}</select>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="closeModal()">ยกเลิก</button>
+      <button class="btn btn-primary" onclick="confirmEditUser('${u.id}')">บันทึกการแก้ไข</button>
+    </div>
+  `);
+}
+async function confirmEditUser(id){
+  const name = $('#muName').value.trim();
+  const email = $('#muEmail').value.trim();
+  const username = $('#muUsername').value.trim();
+  const password = $('#muPassword').value;
+  const role = $('#muRole').value;
+  if(!name || !username){ toast('กรุณากรอกชื่อและ username ให้ครบ'); return; }
+  const body = { name, email, username, role };
+  if(password) body.password = password;
+  try{
+    const res = await fetch(`/api/users/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if(res.ok){
+      closeModal();
+      await loadUsers();
+      renderSettingsUsers();
+      toast('บันทึกการแก้ไขเรียบร้อยแล้ว','success');
+    } else toast(data.message || 'แก้ไขไม่สำเร็จ');
+  }catch(err){ toast('เชื่อมต่อ backend ไม่สำเร็จ'); }
+}
+
+/* ---------------- SETTINGS: ROLES & PERMISSIONS ---------------- */
+// Role มี 3 แบบคงที่ (Admin/Engineer/Viewer) — เพิ่ม/ลบ/เปลี่ยนชื่อไม่ได้ แก้ได้แค่ permissions
+const PAGE_KEYS = ['home','task','dashboard','reports','logs','settings'];
+function renderSettingsRoles(){
+  $('#rolesTableBody').innerHTML = DB.roles.map(r=>`
+    <tr>
+      <td class="cell-strong">${r.name}</td>
+      ${PAGE_KEYS.map(k=>`<td style="text-align:center"><input type="checkbox" ${r.permissions[k]?'checked':''} onchange="updateRolePermission('${r.id}','${k}',this.checked)"></td>`).join('')}
+    </tr>
+  `).join('') || `<tr><td colspan="7"><div class="cell-muted" style="font-size:13px">ยังไม่มี Role</div></td></tr>`;
+}
+async function updateRolePermission(id, key, checked){
+  try{
+    const res = await fetch(`/api/roles/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ permissions: { [key]: checked } }),
+    });
+    if(res.ok){
+      await loadRoles();
+      applyPermissionGate();
+      toast('อัปเดตสิทธิ์แล้ว','success');
+    } else toast('อัปเดตสิทธิ์ไม่สำเร็จ');
+  }catch(err){ toast('เชื่อมต่อ backend ไม่สำเร็จ'); }
+}
+async function testCameraConnection(){
+  const urlInput = $('#cameraUrlInput');
+  const btn = $('#testCameraBtn');
+  const resultEl = $('#cameraTestResult');
+  const detailEl = $('#cameraTestDetail');
+  const url = urlInput ? urlInput.value.trim() : '';
+
+  if(detailEl){ detailEl.style.display = 'none'; detailEl.textContent = ''; }
+  if(resultEl){ resultEl.textContent = ''; resultEl.style.color = 'var(--muted)'; }
+
+  if(!url){
+    toast('กรุณากรอก Camera URL ก่อนทดสอบ');
+    urlInput?.focus();
+    return;
+  }
+  if(!/^rtsps?:\/\/\S+$/i.test(url)){
+    toast('รูปแบบ URL ไม่ถูกต้อง ต้องขึ้นต้นด้วย rtsp:// หรือ rtsps://');
+    urlInput?.focus();
+    return;
+  }
+
   toast('กำลังทดสอบการเชื่อมต่อกล้อง...');
-  setTimeout(()=> toast('เชื่อมต่อกล้องสำเร็จ','success'), 1200);
+  if(btn){ btn.disabled = true; btn.textContent = 'กำลังทดสอบ...'; }
+  if(resultEl) resultEl.textContent = 'กำลังเชื่อมต่อไปยังกล้อง...';
+
+  try{
+    const res = await fetch('/api/test-rtsp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, timeoutMs: 8000 })
+    });
+    const data = await res.json();
+
+    if(data.success){
+      toast(data.message || 'เชื่อมต่อกล้องสำเร็จ', 'success');
+      if(resultEl){ resultEl.textContent = '✓ เชื่อมต่อสำเร็จ'; resultEl.style.color = 'var(--green)'; }
+      if(detailEl && data.stream){
+        const s = data.stream;
+        detailEl.style.display = 'block';
+        detailEl.textContent = `Codec: ${s.codec_name || '-'} | ความละเอียด: ${s.width || '-'}x${s.height || '-'} | FPS: ${s.avg_frame_rate || '-'}`;
+      }
+    } else {
+      toast(data.message || 'เชื่อมต่อกล้องไม่สำเร็จ', 'error');
+      if(resultEl){ resultEl.textContent = '✕ เชื่อมต่อไม่สำเร็จ'; resultEl.style.color = 'var(--danger)'; }
+      if(detailEl && data.raw){
+        detailEl.style.display = 'block';
+        detailEl.textContent = data.raw;
+      }
+    }
+  } catch(err){
+    toast('ไม่สามารถติดต่อเซิร์ฟเวอร์ได้ (backend ไม่ทำงาน หรือเครือข่ายมีปัญหา)', 'error');
+    if(resultEl){ resultEl.textContent = '✕ ไม่สามารถติดต่อเซิร์ฟเวอร์ได้'; resultEl.style.color = 'var(--danger)'; }
+    if(detailEl){
+      detailEl.style.display = 'block';
+      detailEl.textContent = String(err.message || err);
+    }
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = 'ทดสอบการเชื่อมต่อ'; }
+  }
 }
+/* ================= CAMERA SOURCES (real backend) ================= */
+let CAMERAS = [];        // list loaded from backend
+let currentTaskCameraId = null; // camera currently shown in task-detail live view
+
+function cameraStatusLabel(status){
+  return { live:'🟢 Live', disconnect:'🔴 ขาดการเชื่อมต่อ', unknown:'⚪ ยังไม่ทดสอบ' }[status] || '⚪ ยังไม่ทดสอบ';
+}
+
+async function loadCameraList(){
+  try{
+    const res = await fetch('/api/cameras');
+    CAMERAS = await res.json();
+  }catch(err){
+    CAMERAS = [];
+    toast('ไม่สามารถโหลดรายการกล้องได้ (เช็คว่า backend ทำงานอยู่)','error');
+  }
+  renderCameraSettingsList();
+  populateTaskCameraSelect();
+}
+
+function renderCameraSettingsList(){
+  const body = $('#cameraListBody');
+  if(!body) return;
+  if(!CAMERAS.length){
+    body.innerHTML = `<tr><td colspan="5"><div class="empty-state">${ICON.empty}<div class="e-title">ยังไม่มีกล้อง</div><div class="e-desc">เพิ่มกล้องใหม่จากฟอร์มด้านบน</div></div></td></tr>`;
+    return;
+  }
+  body.innerHTML = CAMERAS.map(c => `
+    <tr>
+      <td class="cell-strong">${c.name}</td>
+      <td class="cell-muted">${c.zone || '-'}</td>
+      <td class="cell-muted text-mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.url}">${c.url}</td>
+      <td id="camStatus-${c.id}">${cameraStatusLabel(c.status)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-secondary btn-sm" onclick="testSavedCamera('${c.id}')">ทดสอบ</button>
+        <button class="btn btn-secondary btn-sm" onclick="viewCameraSnapshotModal('${c.id}')">ดูภาพ</button>
+        <button class="btn btn-secondary btn-sm" onclick="deleteCameraItem('${c.id}')">ลบ</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function submitAddCamera(){
+  const name = $('#cameraNameInput')?.value.trim();
+  const zone = $('#cameraZoneInput')?.value.trim();
+  const url = $('#cameraUrlInput')?.value.trim();
+  const btn = $('#saveCameraBtn');
+
+  if(!name || !url){
+    toast('กรุณากรอกชื่อกล้องและ Camera URL');
+    return;
+  }
+  if(!/^rtsps?:\/\/\S+$/i.test(url)){
+    toast('รูปแบบ URL ไม่ถูกต้อง ต้องขึ้นต้นด้วย rtsp:// หรือ rtsps://');
+    return;
+  }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'กำลังบันทึก...'; }
+  try{
+    const res = await fetch('/api/cameras', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name, zone, url })
+    });
+    const data = await res.json();
+    if(res.ok){
+      toast('เพิ่มกล้องเรียบร้อยแล้ว','success');
+      $('#cameraNameInput').value = '';
+      $('#cameraZoneInput').value = '';
+      $('#cameraUrlInput').value = '';
+      await loadCameraList();
+    } else {
+      toast(data.message || 'เพิ่มกล้องไม่สำเร็จ','error');
+    }
+  }catch(err){
+    toast('ไม่สามารถติดต่อเซิร์ฟเวอร์ได้','error');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '+ บันทึกกล้องนี้'; }
+  }
+}
+
+async function deleteCameraItem(id){
+  if(!confirm('ลบกล้องนี้ใช่หรือไม่?')) return;
+  try{
+    const res = await fetch(`/api/cameras/${id}`, { method:'DELETE' });
+    if(res.ok){
+      toast('ลบกล้องแล้ว','success');
+      await loadCameraList();
+    } else {
+      const data = await res.json();
+      toast(data.message || 'ลบไม่สำเร็จ','error');
+    }
+  }catch(err){
+    toast('ไม่สามารถติดต่อเซิร์ฟเวอร์ได้','error');
+  }
+}
+
+async function testSavedCamera(id){
+  const cell = $(`#camStatus-${id}`);
+  if(cell) cell.textContent = 'กำลังทดสอบ...';
+  try{
+    const res = await fetch(`/api/cameras/${id}/test`, { method:'POST' });
+    const data = await res.json();
+    const cam = CAMERAS.find(c=>c.id===id);
+    if(cam && data.camera) cam.status = data.camera.status;
+    if(cell) cell.textContent = cameraStatusLabel(cam?.status);
+    toast(data.message || (data.success ? 'เชื่อมต่อสำเร็จ' : 'เชื่อมต่อไม่สำเร็จ'), data.success ? 'success' : 'error');
+  }catch(err){
+    if(cell) cell.textContent = cameraStatusLabel('disconnect');
+    toast('ไม่สามารถติดต่อเซิร์ฟเวอร์ได้','error');
+  }
+}
+
+function viewCameraSnapshotModal(id){
+  const cam = CAMERAS.find(c=>c.id===id);
+  if(!cam) return;
+  openModal(`
+    <div class="modal-head"><h3>ภาพจากกล้อง: ${cam.name}</h3><button class="modal-close" onclick="closeModal()">${ICON.x}</button></div>
+    <div class="modal-body">
+      <div class="camera-frame" style="height:320px">
+        <img id="modalSnapshotImg" class="camera-img" style="display:none">
+        <div class="camera-mock" id="modalSnapshotMock"><div>กำลังดึงภาพ...</div></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="closeModal()">ปิด</button>
+      <button class="btn btn-primary" onclick="loadModalSnapshot('${cam.id}')">ดึงภาพใหม่</button>
+    </div>
+  `);
+  loadModalSnapshot(cam.id);
+}
+function loadModalSnapshot(id){
+  const img = $('#modalSnapshotImg');
+  const mock = $('#modalSnapshotMock');
+  if(!img) return;
+  mock.style.display = 'grid';
+  mock.innerHTML = '<div>กำลังดึงภาพ...</div>';
+  img.style.display = 'none';
+  const testImg = new Image();
+  testImg.onload = () => {
+    img.src = testImg.src;
+    img.style.display = 'block';
+    mock.style.display = 'none';
+  };
+  testImg.onerror = () => {
+    mock.innerHTML = '<div>ดึงภาพไม่สำเร็จ<br><small>ตรวจสอบการเชื่อมต่อกล้อง</small></div>';
+  };
+  testImg.src = `/api/cameras/${id}/snapshot?_=${Date.now()}`;
+}
+
+async function previewAdHocSnapshot(){
+  const url = $('#cameraUrlInput')?.value.trim();
+  const wrap = $('#cameraPreviewWrap');
+  const img = $('#cameraPreviewImg');
+  const mock = $('#cameraPreviewMock');
+  if(!url){ toast('กรุณากรอก Camera URL ก่อน'); return; }
+  if(!/^rtsps?:\/\/\S+$/i.test(url)){ toast('รูปแบบ URL ไม่ถูกต้อง'); return; }
+
+  wrap.style.display = 'block';
+  mock.style.display = 'grid';
+  mock.innerHTML = '<div>กำลังดึงภาพตัวอย่าง...</div>';
+  img.style.display = 'none';
+
+  const testImg = new Image();
+  testImg.onload = () => {
+    img.src = testImg.src;
+    img.style.display = 'block';
+    mock.style.display = 'none';
+  };
+  testImg.onerror = () => {
+    mock.innerHTML = '<div>ดึงภาพไม่สำเร็จ<br><small>ตรวจสอบ URL และเครือข่าย</small></div>';
+  };
+  testImg.src = `/api/snapshot?url=${encodeURIComponent(url)}&_=${Date.now()}`;
+}
+
+/* ---------- Task-detail live camera binding ---------- */
+function populateTaskCameraSelect(){
+  const sel = $('#tdCameraSelect');
+  if(!sel) return;
+  sel.innerHTML = `<option value="">— ไม่เลือกกล้อง —</option>` +
+    CAMERAS.map(c=>`<option value="${c.id}">${c.name}${c.zone ? ' — '+c.zone : ''}</option>`).join('');
+
+  const t = byId(currentTaskId);
+  if(t){
+    const auto = t.cameraId || (CAMERAS.find(c=> c.zone && t.zone && c.zone.toLowerCase()===t.zone.toLowerCase())?.id) || '';
+    sel.value = auto;
+    setTaskCamera(auto, /*silent*/true);
+  }
+}
+
+function stopTaskCameraStream(){
+  const img = $('#tdCameraImg');
+  if(img){ img.src=''; img.style.display='none'; }
+  currentTaskCameraId = null;
+}
+
+function setTaskCamera(camId, silent){
+  const t = byId(currentTaskId);
+  if(t){
+    t.cameraId = camId || null;
+    patchTask(t.id, { cameraId: t.cameraId }); // persist Source ที่เลือกไว้ให้ Task นี้
+  }
+
+  const img = $('#tdCameraImg');
+  const mock = $('#tdCameraMock');
+  const stateEl = $('#tdCameraLiveState');
+
+  if(!camId){
+    stopTaskCameraStream();
+    if(mock){ mock.style.display='grid'; mock.innerHTML = '<div>ยังไม่ได้เลือกกล้อง<br><small>เลือก Source ด้านบนเพื่อดูภาพสด</small></div>'; }
+    if(stateEl) stateEl.textContent = '';
+    return;
+  }
+
+  currentTaskCameraId = camId;
+  if(stateEl) stateEl.textContent = 'กำลังเชื่อมต่อ...';
+  if(mock){ mock.style.display='grid'; mock.innerHTML = '<div>กำลังเชื่อมต่อสตรีม...</div>'; }
+  if(img){
+    img.style.display = 'none';
+    img.onload = () => { mock.style.display='none'; img.style.display='block'; if(stateEl) stateEl.textContent='● LIVE'; if(stateEl) stateEl.style.color='var(--green)'; };
+    img.onerror = () => { mock.style.display='grid'; mock.innerHTML = '<div>เชื่อมต่อสตรีมไม่สำเร็จ<br><small>ลองกด "รีเฟรชภาพ" หรือตรวจสอบกล้อง</small></div>'; img.style.display='none'; if(stateEl) stateEl.textContent='✕ ไม่สามารถเชื่อมต่อ'; if(stateEl) stateEl.style.color='var(--danger)'; };
+    img.src = `/api/cameras/${camId}/stream?fps=6&width=960&_=${Date.now()}`;
+  }
+  if(!silent) toast('กำลังเชื่อมต่อกล้อง...');
+}
+
+function refreshTaskCamera(){
+  if(currentTaskCameraId){
+    setTaskCamera(currentTaskCameraId);
+  } else {
+    toast('กรุณาเลือกกล้องก่อน');
+  }
+}
+
 function testAlert(){
   toast('กำลังส่งการแจ้งเตือนทดสอบไปยัง Discord...');
   setTimeout(()=> toast('ส่งการแจ้งเตือนทดสอบสำเร็จ','success'), 1000);
@@ -636,7 +1261,7 @@ function runBackup(){
 }
 
 /* ================= INIT ================= */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Sidebar nav
   $$('.nav-item').forEach(item=>{
     item.addEventListener('click', ()=> setView(item.dataset.view));
@@ -683,6 +1308,15 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#storageAutoDelete')?.addEventListener('change', e=>{
     toast(e.target.checked ? 'เปิดใช้งานลบข้อมูลอัตโนมัติแล้ว' : 'ปิดใช้งานลบข้อมูลอัตโนมัติแล้ว');
   });
+
+  // โหลดกล้อง (สำหรับ dropdown เลือก Source) ก่อน แล้วค่อยโหลด Task
+  // เพราะตอน render Task list/detail ต้องใช้ CAMERAS ประกอบ dropdown ให้ครบ
+  await loadRoles();
+  await loadUsers();
+  applyPermissionGate();
+  await loadCameraList();
+  await loadBrickTypes();
+  await loadTasks();
 
   setView('home');
   setSettingsTab('camera');

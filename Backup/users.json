@@ -1,0 +1,34 @@
+[
+  {
+    "id": "u1",
+    "name": "Admin User",
+    "email": "admin@civil.co",
+    "username": "admin",
+    "password": "password",
+    "role": "Admin"
+  },
+  {
+    "id": "u2",
+    "name": "วิศวกร กิจงาน",
+    "email": "engineer@civil.co",
+    "username": "engineer",
+    "password": "password",
+    "role": "Engineer"
+  },
+  {
+    "id": "u3",
+    "name": "ผู้บริหาร ดูงาน",
+    "email": "viewer@civil.co",
+    "username": "viewer",
+    "password": "password",
+    "role": "Viewer"
+  },
+  {
+    "id": "u1fb21c6b",
+    "name": "asdasd",
+    "email": "asd",
+    "username": "asd",
+    "password": "asdasd",
+    "role": "Admin"
+  }
+]

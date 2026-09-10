@@ -1,0 +1,11 @@
+[
+  {
+    "id": "9dfa2833-a174-4364-99d3-8b2cde253a54",
+    "name": "CAM A",
+    "url": "rtsp://192.168.10.61:554/stream",
+    "zone": "CAM A",
+    "status": "live",
+    "createdAt": "2026-09-02T18:27:16.612Z",
+    "lastTestedAt": "2026-09-02T18:27:18.732Z"
+  }
+]

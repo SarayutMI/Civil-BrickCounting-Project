@@ -1,0 +1,11 @@
+[
+  {
+    "id": "88d6a6dc-0e20-496a-a8cd-b9e2575ff8d0",
+    "name": "IDE",
+    "url": "rtsp://192.168.10.53:554/stream",
+    "zone": "ZoneC",
+    "status": "live",
+    "createdAt": "2026-08-29T16:46:48.921Z",
+    "lastTestedAt": "2026-08-29T16:46:59.554Z"
+  }
+]

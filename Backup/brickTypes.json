@@ -1,0 +1,17 @@
+[
+  {
+    "blocksPerSqm": 12.23,
+    "id": "bt1",
+    "name": "อิฐบล็อก"
+  },
+  {
+    "blocksPerSqm": 8.3,
+    "id": "bt2",
+    "name": "อิฐมวลเบา"
+  },
+  {
+    "blocksPerSqm": 80,
+    "id": "bt3",
+    "name": "อิฐมอญ"
+  }
+]

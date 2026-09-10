@@ -1,0 +1,297 @@
+[
+  {
+    "id": "t1",
+    "name": "อาคาร A ชั้น 1 — ผนังด้านทิศเหนือ",
+    "zone": "Zone A1",
+    "brickType": "bt1",
+    "status": "finished",
+    "workers": [
+      "w1",
+      "w2",
+      "w3"
+    ],
+    "area": 118,
+    "expectedArea": 200,
+    "blocks": 1450,
+    "cameraStatus": "live",
+    "lastUpdate": "2 นาทีที่แล้ว",
+    "confidence": 75,
+    "snapshotInterval": 30,
+    "cameraId": null,
+    "schedule": {
+      "start": "08:00",
+      "breakStart": "12:00",
+      "breakEnd": "13:00",
+      "end": "17:00"
+    },
+    "roi": [
+      [
+        0.18,
+        0.2
+      ],
+      [
+        0.82,
+        0.18
+      ],
+      [
+        0.86,
+        0.78
+      ],
+      [
+        0.14,
+        0.82
+      ]
+    ],
+    "progressSeries": [
+      8,
+      15,
+      24,
+      30,
+      38,
+      47,
+      55,
+      60
+    ]
+  },
+  {
+    "id": "t2",
+    "name": "อาคาร A ชั้น 2 — ผนังด้านทิศใต้",
+    "zone": "Zone A2",
+    "brickType": "bt2",
+    "status": "pause",
+    "workers": [
+      "w4"
+    ],
+    "area": 64,
+    "expectedArea": 180,
+    "blocks": 780,
+    "cameraStatus": "connecting",
+    "lastUpdate": "14 นาทีที่แล้ว",
+    "confidence": 70,
+    "snapshotInterval": 30,
+    "cameraId": null,
+    "schedule": {
+      "start": "08:00",
+      "breakStart": "12:00",
+      "breakEnd": "13:00",
+      "end": "17:00"
+    },
+    "roi": [],
+    "progressSeries": [
+      5,
+      10,
+      14,
+      20,
+      26,
+      30,
+      33,
+      36
+    ]
+  },
+  {
+    "id": "t3",
+    "name": "อาคาร B ชั้น 1 — เสาและผนังรับน้ำหนัก",
+    "zone": "Zone B1",
+    "brickType": "bt3",
+    "status": "finished",
+    "workers": [
+      "w5",
+      "w6"
+    ],
+    "area": 150,
+    "expectedArea": 210,
+    "blocks": 1980,
+    "cameraStatus": "live",
+    "lastUpdate": "ไม่ถึงนาทีที่แล้ว",
+    "confidence": 80,
+    "snapshotInterval": 15,
+    "cameraId": null,
+    "schedule": {
+      "start": "07:30",
+      "breakStart": "12:00",
+      "breakEnd": "13:00",
+      "end": "16:30"
+    },
+    "roi": [
+      [
+        0.12,
+        0.15
+      ],
+      [
+        0.88,
+        0.15
+      ],
+      [
+        0.88,
+        0.85
+      ],
+      [
+        0.12,
+        0.85
+      ]
+    ],
+    "progressSeries": [
+      10,
+      22,
+      33,
+      44,
+      52,
+      60,
+      66,
+      71
+    ]
+  },
+  {
+    "id": "t4",
+    "name": "อาคาร B ชั้น 2 — ผนังกั้นห้อง",
+    "zone": "Zone B2",
+    "brickType": "bt1",
+    "status": "finished",
+    "workers": [
+      "w1"
+    ],
+    "area": 96,
+    "expectedArea": 96,
+    "blocks": 1120,
+    "cameraStatus": "disconnect",
+    "lastUpdate": "2 วันที่แล้ว",
+    "confidence": 75,
+    "snapshotInterval": 30,
+    "cameraId": null,
+    "schedule": {
+      "start": "08:00",
+      "breakStart": "12:00",
+      "breakEnd": "13:00",
+      "end": "17:00"
+    },
+    "roi": [],
+    "progressSeries": [
+      20,
+      40,
+      55,
+      68,
+      80,
+      90,
+      96,
+      100
+    ]
+  },
+  {
+    "id": "t5",
+    "name": "อาคาร C ชั้น 1 — ผนังด้านหน้า",
+    "zone": "Zone C1",
+    "brickType": "bt2",
+    "status": "finished",
+    "workers": [
+      "w2",
+      "w3",
+      "w4"
+    ],
+    "area": 40,
+    "expectedArea": 160,
+    "blocks": 410,
+    "cameraStatus": "live",
+    "lastUpdate": "5 นาทีที่แล้ว",
+    "confidence": 72,
+    "snapshotInterval": 30,
+    "cameraId": null,
+    "schedule": {
+      "start": "08:00",
+      "breakStart": "12:00",
+      "breakEnd": "13:00",
+      "end": "17:00"
+    },
+    "roi": [],
+    "progressSeries": [
+      3,
+      7,
+      11,
+      15,
+      19,
+      22,
+      24,
+      25
+    ]
+  },
+  {
+    "id": "t6",
+    "name": "อาคาร C ชั้น 2 — ผนังกันไฟ",
+    "zone": "Zone C2",
+    "brickType": "bt3",
+    "status": "finished",
+    "workers": [
+      "w5"
+    ],
+    "area": 110,
+    "expectedArea": 110,
+    "blocks": 1340,
+    "cameraStatus": "disconnect",
+    "lastUpdate": "5 วันที่แล้ว",
+    "confidence": 75,
+    "snapshotInterval": 30,
+    "cameraId": null,
+    "schedule": {
+      "start": "08:00",
+      "breakStart": "12:00",
+      "breakEnd": "13:00",
+      "end": "17:00"
+    },
+    "roi": [],
+    "progressSeries": [
+      15,
+      35,
+      50,
+      65,
+      78,
+      88,
+      95,
+      100
+    ]
+  },
+  {
+    "id": "459902aa-d109-4e78-aef8-b8ef4ed7ea67",
+    "name": "Test 1",
+    "zone": "Test 1",
+    "brickType": "bt1",
+    "status": "running",
+    "workers": [
+      "w1",
+      "w4",
+      "w5"
+    ],
+    "area": 0,
+    "expectedArea": 100,
+    "blocks": 0,
+    "cameraStatus": "disconnect",
+    "lastUpdate": "เพิ่งสร้าง",
+    "confidence": 86,
+    "snapshotInterval": 5,
+    "cameraId": "ddc44206-bfb8-4bd5-b9bb-72e34c36c9dc",
+    "schedule": {
+      "start": "08:00",
+      "breakStart": "12:00",
+      "breakEnd": "13:00",
+      "end": "17:00"
+    },
+    "roi": [
+      [
+        0.12111553784860558,
+        0.2358974358974359
+      ],
+      [
+        0.1147410358565737,
+        0.7974358974358975
+      ],
+      [
+        0.9290836653386454,
+        0.7974358974358975
+      ],
+      [
+        0.8924302788844621,
+        0.21794871794871795
+      ]
+    ],
+    "progressSeries": [],
+    "createdAt": "2026-09-02T16:45:52.642Z"
+  }
+]

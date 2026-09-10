@@ -1,0 +1,21 @@
+{
+  "name": "civil-rtsp-monitor",
+  "version": "1.1.0",
+  "description": "CIVIL — AI Brick Construction Monitoring (RTSP + YOLOv11 detection + ROI area calc)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "notes": {
+    "yolo_service": "Requires separate Python service (yolo_service.py) — see README_YOLO.md. Uses Node 18+ built-in fetch to call it, no extra npm deps needed.",
+    "env": {
+      "YOLO_SERVICE_URL": "http://127.0.0.1:8000 (default) — URL of the running yolo_service.py"
+    }
+  }
+}

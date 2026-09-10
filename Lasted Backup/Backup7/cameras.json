@@ -1,0 +1,11 @@
+[
+  {
+    "id": "ddc44206-bfb8-4bd5-b9bb-72e34c36c9dc",
+    "name": "CAMERA01",
+    "url": "rtsp://192.168.10.61:554/stream",
+    "zone": "CAMERA01",
+    "status": "live",
+    "createdAt": "2026-09-02T16:57:24.607Z",
+    "lastTestedAt": "2026-09-02T16:57:29.383Z"
+  }
+]

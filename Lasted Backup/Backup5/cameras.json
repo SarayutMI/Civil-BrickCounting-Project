@@ -1,0 +1,11 @@
+[
+  {
+    "id": "d5c7bbbb-d9cb-4e36-8dd4-03c9f33323bd",
+    "name": "Device A",
+    "url": "rtsp://192.168.10.59:554/stream",
+    "zone": "Device A",
+    "status": "live",
+    "createdAt": "2026-09-01T17:07:38.177Z",
+    "lastTestedAt": "2026-09-01T17:07:42.763Z"
+  }
+]
