@@ -769,7 +769,13 @@ app.post('/api/login', async (req, res) => {
   if (wait) {
     return res.status(429).json({ success: false, message: `ลองผิดหลายครั้งเกินไป — รออีก ${Math.ceil(wait / 60)} นาที` });
   }
-  const user = users.find((u) => u.username.toLowerCase() === String(username).trim().toLowerCase());
+  const byName = () => users.find((u) => u.username.toLowerCase() === String(username).trim().toLowerCase());
+  let user = byName();
+  if (!user) {
+    // บัญชีอาจถูกเพิ่มตรงลง DB (scripts/seed-users.js) ขณะ server รันอยู่ — cache ยังไม่มี จึงโหลดใหม่จาก DB หนึ่งครั้งก่อนสรุปว่าไม่พบ
+    users = await loadUsersFromDB().catch(() => users);
+    user = byName();
+  }
   const ok = user && (await bcrypt.compare(password, user.password).catch(() => false));
   if (!ok) {
     auth.recordFail(req, username);
