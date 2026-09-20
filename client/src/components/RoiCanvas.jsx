@@ -23,7 +23,7 @@ export default function RoiCanvas({ points, onAddPoint }) {
   function draw() {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const wrap = canvas.closest('.camera-frame');
+    const wrap = canvas.closest('.camera-stage') || canvas.closest('.camera-frame');
     if (!wrap) return;
     const w = wrap.clientWidth, h = wrap.clientHeight;
     canvas.width = w; canvas.height = h;

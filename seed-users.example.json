@@ -1,0 +1,5 @@
+[
+  { "name": "Admin", "email": "admin@example.com", "username": "admin", "password": "CHANGE-ME-min-8-chars", "role": "Admin" },
+  { "name": "Engineer", "email": "engineer@example.com", "username": "engineer", "password": "CHANGE-ME-min-8-chars", "role": "Engineer" },
+  { "name": "Viewer", "email": "viewer@example.com", "username": "viewer", "password": "CHANGE-ME-min-8-chars", "role": "Viewer" }
+]

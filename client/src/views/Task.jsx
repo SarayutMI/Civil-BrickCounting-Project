@@ -11,7 +11,7 @@ import TaskDetail from './TaskDetail.jsx';
 export default function Task({
   taskSubView, currentTaskId, onOpenTask, onBack,
   taskFilter, setTaskFilter, taskSearch, setTaskSearch,
-  tasks, brickTypes, workersMaster, cameras,
+  tasks, brickTypes, workersMaster, cameras, reloadCameras,
   mergeTask, patchTaskRemote, reloadTasks,
 }) {
   return (
@@ -35,6 +35,7 @@ export default function Task({
           brickTypes={brickTypes}
           workersMaster={workersMaster}
           cameras={cameras}
+          reloadCameras={reloadCameras}
           mergeTask={mergeTask}
           patchTaskRemote={patchTaskRemote}
           onBack={onBack}

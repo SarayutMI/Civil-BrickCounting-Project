@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Icon from '../icons/Icon.jsx';
 import StatCard from '../components/StatCard.jsx';
 import LineChart from '../components/charts/LineChart.jsx';
 import { StatusBadge, pct } from '../utils.jsx';
+import * as api from '../api.js';
 
 const STEPS = ['เริ่มงาน', 'ตรวจจับ 25%', 'ตรวจจับ 50%', 'ตรวจจับ 75%', 'เสร็จสิ้น'];
 
@@ -16,6 +17,25 @@ export default function Dashboard({ tasks, currentTaskId }) {
   ));
 
   const t = tasks.find((x) => x.id === selectedTaskId);
+
+  // Real data for the chart + gallery: today's per-minute rows of this task (table task_history), refreshed every 30 s.
+  const [todayRows, setTodayRows] = useState([]);
+  useEffect(() => {
+    if (!selectedTaskId) return undefined;
+    let cancelled = false;
+    async function load() {
+      const start = new Date(); start.setHours(0, 0, 0, 0);
+      const rows = await api.getTaskHistory(selectedTaskId, { from: start.toISOString() });
+      if (!cancelled) setTodayRows(rows);
+    }
+    load();
+    const id = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [selectedTaskId]);
+  // ≤ 60 evenly spaced points keep the chart light on a busy day; progress is % of the expected area
+  const step = Math.max(1, Math.ceil(todayRows.length / 60));
+  const chartSeries = todayRows.filter((_, i) => i % step === 0 || i === todayRows.length - 1).map((r) => r.progressPct ?? 0);
+  const galleryRows = todayRows.filter((r) => r.snapshot).slice(-8).reverse();
 
   return (
     <section id="view-dashboard" className="view active">
@@ -57,12 +77,17 @@ export default function Dashboard({ tasks, currentTaskId }) {
           </div>
 
           <div className="two-col">
-            <div className="card"><div className="card-head"><h3>Progress Chart</h3></div><div className="card-body"><div id="dashChart" className="chart"><LineChart series={t.progressSeries && t.progressSeries.length ? t.progressSeries : [0]} color="var(--accent)" /></div></div></div>
+            <div className="card"><div className="card-head"><h3>Progress Chart</h3></div><div className="card-body"><div id="dashChart" className="chart">{chartSeries.length ? <LineChart series={chartSeries} color="var(--accent)" /> : <div className="cell-muted" style={{ padding: 40, textAlign: 'center' }}>ยังไม่มีข้อมูลของวันนี้</div>}</div></div></div>
             <div className="card"><div className="card-head"><h3>Snapshots</h3></div><div className="card-body">
               <div id="dashGallery" className="gallery">
-                {Array.from({ length: 8 }, (_, i) => ({ time: `08:${(i * 30 % 60).toString().padStart(2, '0')}` })).map((s, i) => (
-                  <div className="gallery-item" key={i}><div className="g-mock" /><div className="g-time">{s.time} · วันนี้</div></div>
-                ))}
+                {galleryRows.length === 0
+                  ? <div className="cell-muted" style={{ gridColumn: '1 / -1', padding: 24, textAlign: 'center' }}>ยังไม่มีภาพ snapshot ของวันนี้</div>
+                  : galleryRows.map((r) => (
+                    <div className="gallery-item" key={r.at}>
+                      <img className="g-mock" style={{ width: '100%', height: 90, objectFit: 'cover', display: 'block', background: '#161719' }} src={r.snapshot} loading="lazy" alt="" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
+                      <div className="g-time">{new Date(r.at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false })} · {r.blocks} บล็อก</div>
+                    </div>
+                  ))}
               </div>
             </div></div>
           </div>

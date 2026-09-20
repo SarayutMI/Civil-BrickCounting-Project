@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import * as api from '../api.js';
 
-/* Ported from login.html — folded into the SPA as a component instead of a
-   separate HTML page. Same mockup credentials hint, same error handling. */
+/* Login form. Credentials are checked by the server (bcrypt hash in table users); the
+   session is an HttpOnly cookie, so nothing about the user is stored in the browser. */
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -45,7 +45,6 @@ export default function Login({ onLogin }) {
         </div>
         <button type="submit" disabled={busy}>{busy ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}</button>
         <div className="err">{err}</div>
-        <div className="hint">Mockup — ทดลองใช้ user: <strong>admin</strong> / pass: <strong>password</strong></div>
       </form>
     </div>
   );

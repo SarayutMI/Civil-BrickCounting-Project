@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
   name     TEXT NOT NULL,
   email    TEXT NOT NULL DEFAULT '',
   username TEXT NOT NULL UNIQUE,
-  password TEXT NOT NULL, -- plaintext by design (documented mockup limitation carried over as-is)
+  password TEXT NOT NULL, -- bcrypt hash only (never plaintext) — hashed by server.js before every write
   role     TEXT NOT NULL
 );
 

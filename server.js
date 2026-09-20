@@ -14,7 +14,7 @@
  *
  * PERSISTENCE:
  * เดิมระบบนี้เก็บทุกอย่างเป็นไฟล์ JSON แบนบนดิสก์ (cameras.json, tasks.json, ...)
- * ตอนนี้ย้ายมาใช้ PostgreSQL แล้ว (ดู db.js + sql/schema.sql + migrate.js) แต่ยังคง
+ * ตอนนี้ย้ายมาใช้ PostgreSQL แล้ว (ดู db.js + migrations/*.sql ที่รันเองตอน boot) แต่ยังคง
  * เก็บ cache ในหน่วยความจำ (in-memory array) ไว้เหมือนเดิม เพราะโค้ดหลายจุด (auto-detect
  * loop ทุก 1 วิ, task-history snapshot ทุก 1 นาที, ฟังก์ชัน find*) เข้าถึงข้อมูลแบบ sync
  * บ่อยมาก — สถาปัตยกรรมตอนนี้คือ "cache-aside": โหลดจาก Postgres เข้า cache ตอน startup,
@@ -30,6 +30,11 @@ const { spawn } = require('child_process');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const { pool } = require('./db');
+const { runMigrations } = require('./migrations');
+const { createAuth } = require('./auth');
+const schedule = require('./schedule');
+const imageView = require('./imageView');
+const { buildTimelapse, FRAME_RE } = require('./timelapse');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -42,9 +47,31 @@ const PERSON_DETECT_CONFIDENCE = Number(process.env.PERSON_DETECT_CONFIDENCE) ||
 const SNAPSHOTS_DIR = path.join(__dirname, 'snapshots');
 if (!fs.existsSync(SNAPSHOTS_DIR)) fs.mkdirSync(SNAPSHOTS_DIR, { recursive: true });
 
+app.set('trust proxy', 'loopback'); // อยู่หลัง nginx/Caddy บนเครื่องเดียวกัน — ให้ req.ip / req.secure ถูกต้อง
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'client', 'dist'))); // serve the built React SPA (client/dist)
-app.use('/snapshots', express.static(SNAPSHOTS_DIR));
+
+// state ทั้งหมดอยู่ใน Postgres — ตัวแปร cameras/users/roles ด้านล่างเป็นแค่ cache ที่ auth อ่านผ่าน getter
+const auth = createAuth({ pool, getUsers: () => users, getRoles: () => roles });
+app.use('/api', auth.requireAuth); // ทุก endpoint ต้องมี session ยกเว้น /api/login และ /api/health
+app.use('/snapshots', auth.requireAuth, express.static(SNAPSHOTS_DIR));
+
+/* =========================================================
+   AUDIT LOG (table: audit_logs) — หน้า Logs อ่านจากตารางนี้ ไม่ใช่ข้อมูลจำลอง
+========================================================= */
+function audit(type, level, message, actor) {
+  pool.query('INSERT INTO audit_logs (type, level, message, actor) VALUES ($1,$2,$3,$4)', [type, level, message, actor || null])
+    .catch((err) => console.error('[audit] insert failed:', err.message));
+}
+app.get('/api/logs', async (req, res) => {
+  const n = Math.min(Number(req.query.limit) || 500, 2000);
+  try {
+    const { rows } = await pool.query('SELECT at, type, level, message, actor FROM audit_logs ORDER BY at DESC LIMIT $1', [n]);
+    res.json(rows.map((r) => ({ time: r.at.toISOString(), type: r.type, level: r.level, message: r.message, actor: r.actor })));
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'ดึง Log ไม่สำเร็จ', raw: err.message });
+  }
+});
 
 /* =========================================================
    PERSISTENCE — cameras (table: cameras)
@@ -80,57 +107,11 @@ let cameras = [];
 /* =========================================================
    PERSISTENCE — tasks (table: tasks)
 ========================================================= */
-const DEFAULT_TASKS = [
-  {
-    id: 't1', name: 'อาคาร A ชั้น 1 — ผนังด้านทิศเหนือ', zone: 'Zone A1', brickType: 'bt1',
-    status: 'running', workers: ['w1', 'w2', 'w3'], area: 118, expectedArea: 200, blocks: 1450,
-    cameraStatus: 'live', lastUpdate: '2 นาทีที่แล้ว', confidence: 75, snapshotInterval: 30, cameraId: null,
-    schedule: { start: '08:00', breakStart: '12:00', breakEnd: '13:00', end: '17:00' },
-    roi: [[0.18, 0.2], [0.82, 0.18], [0.86, 0.78], [0.14, 0.82]],
-    progressSeries: [8, 15, 24, 30, 38, 47, 55, 60],
-  },
-  {
-    id: 't2', name: 'อาคาร A ชั้น 2 — ผนังด้านทิศใต้', zone: 'Zone A2', brickType: 'bt2',
-    status: 'pause', workers: ['w4'], area: 64, expectedArea: 180, blocks: 780,
-    cameraStatus: 'connecting', lastUpdate: '14 นาทีที่แล้ว', confidence: 70, snapshotInterval: 30, cameraId: null,
-    schedule: { start: '08:00', breakStart: '12:00', breakEnd: '13:00', end: '17:00' },
-    roi: [], progressSeries: [5, 10, 14, 20, 26, 30, 33, 36],
-  },
-  {
-    id: 't3', name: 'อาคาร B ชั้น 1 — เสาและผนังรับน้ำหนัก', zone: 'Zone B1', brickType: 'bt3',
-    status: 'running', workers: ['w5', 'w6'], area: 150, expectedArea: 210, blocks: 1980,
-    cameraStatus: 'live', lastUpdate: 'ไม่ถึงนาทีที่แล้ว', confidence: 80, snapshotInterval: 15, cameraId: null,
-    schedule: { start: '07:30', breakStart: '12:00', breakEnd: '13:00', end: '16:30' },
-    roi: [[0.12, 0.15], [0.88, 0.15], [0.88, 0.85], [0.12, 0.85]],
-    progressSeries: [10, 22, 33, 44, 52, 60, 66, 71],
-  },
-  {
-    id: 't4', name: 'อาคาร B ชั้น 2 — ผนังกั้นห้อง', zone: 'Zone B2', brickType: 'bt1',
-    status: 'finished', workers: ['w1'], area: 96, expectedArea: 96, blocks: 1120,
-    cameraStatus: 'disconnect', lastUpdate: '2 วันที่แล้ว', confidence: 75, snapshotInterval: 30, cameraId: null,
-    schedule: { start: '08:00', breakStart: '12:00', breakEnd: '13:00', end: '17:00' },
-    roi: [], progressSeries: [20, 40, 55, 68, 80, 90, 96, 100],
-  },
-  {
-    id: 't5', name: 'อาคาร C ชั้น 1 — ผนังด้านหน้า', zone: 'Zone C1', brickType: 'bt2',
-    status: 'running', workers: ['w2', 'w3', 'w4'], area: 40, expectedArea: 160, blocks: 410,
-    cameraStatus: 'live', lastUpdate: '5 นาทีที่แล้ว', confidence: 72, snapshotInterval: 30, cameraId: null,
-    schedule: { start: '08:00', breakStart: '12:00', breakEnd: '13:00', end: '17:00' },
-    roi: [], progressSeries: [3, 7, 11, 15, 19, 22, 24, 25],
-  },
-  {
-    id: 't6', name: 'อาคาร C ชั้น 2 — ผนังกันไฟ', zone: 'Zone C2', brickType: 'bt3',
-    status: 'finished', workers: ['w5'], area: 110, expectedArea: 110, blocks: 1340,
-    cameraStatus: 'disconnect', lastUpdate: '5 วันที่แล้ว', confidence: 75, snapshotInterval: 30, cameraId: null,
-    schedule: { start: '08:00', breakStart: '12:00', breakEnd: '13:00', end: '17:00' },
-    roi: [], progressSeries: [15, 35, 50, 65, 78, 88, 95, 100],
-  },
-];
 const TASK_KNOWN_KEYS = new Set([
   'id', 'name', 'zone', 'brickType', 'status', 'workers', 'area', 'expectedArea',
   'blocks', 'peopleDetected', 'cameraStatus', 'lastUpdate', 'confidence',
   'snapshotInterval', 'cameraId', 'schedule', 'roi', 'progressSeries',
-  'createdAt', 'timelapseStatus',
+  'createdAt', 'timelapseStatus', 'autoPhase', 'lastImageAt',
 ]);
 function taskRowToObj(row) {
   const obj = {
@@ -145,14 +126,11 @@ function taskRowToObj(row) {
   if (row.people_detected !== null && row.people_detected !== undefined) obj.peopleDetected = row.people_detected;
   if (row.created_at) obj.createdAt = row.created_at.toISOString();
   if (row.timelapse_status) obj.timelapseStatus = row.timelapse_status;
+  if (row.auto_phase) obj.autoPhase = row.auto_phase;
+  if (row.last_image_at) obj.lastImageAt = row.last_image_at.toISOString();
   return { ...obj, ...(row.extra || {}) };
 }
 async function loadTasksFromDB() {
-  const { rows: countRows } = await pool.query('SELECT count(*)::int AS n FROM tasks');
-  if (countRows[0].n === 0) {
-    // First run on an empty DB — seed with default demo tasks so the UI isn't empty.
-    for (const t of DEFAULT_TASKS) await upsertTaskRow(t);
-  }
   const { rows } = await pool.query('SELECT * FROM tasks ORDER BY id');
   return rows.map(taskRowToObj);
 }
@@ -163,8 +141,8 @@ async function upsertTaskRow(t) {
     `INSERT INTO tasks (
        id, name, zone, brick_type, status, workers, area, expected_area, blocks,
        people_detected, camera_status, last_update, confidence, snapshot_interval,
-       camera_id, schedule, roi, progress_series, created_at, timelapse_status, extra
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       camera_id, schedule, roi, progress_series, created_at, timelapse_status, extra, auto_phase, last_image_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
      ON CONFLICT (id) DO UPDATE SET
        name=EXCLUDED.name, zone=EXCLUDED.zone, brick_type=EXCLUDED.brick_type, status=EXCLUDED.status,
        workers=EXCLUDED.workers, area=EXCLUDED.area, expected_area=EXCLUDED.expected_area,
@@ -172,7 +150,8 @@ async function upsertTaskRow(t) {
        last_update=EXCLUDED.last_update, confidence=EXCLUDED.confidence, snapshot_interval=EXCLUDED.snapshot_interval,
        camera_id=EXCLUDED.camera_id, schedule=EXCLUDED.schedule, roi=EXCLUDED.roi,
        progress_series=EXCLUDED.progress_series, created_at=EXCLUDED.created_at,
-       timelapse_status=EXCLUDED.timelapse_status, extra=EXCLUDED.extra`,
+       timelapse_status=EXCLUDED.timelapse_status, extra=EXCLUDED.extra, auto_phase=EXCLUDED.auto_phase,
+       last_image_at=EXCLUDED.last_image_at`,
     [
       t.id, t.name, t.zone || '', t.brickType || null, t.status || 'pause',
       JSON.stringify(Array.isArray(t.workers) ? t.workers : []),
@@ -182,7 +161,7 @@ async function upsertTaskRow(t) {
       Number(t.snapshotInterval) || 30, t.cameraId || null,
       JSON.stringify(t.schedule || {}), JSON.stringify(Array.isArray(t.roi) ? t.roi : []),
       JSON.stringify(Array.isArray(t.progressSeries) ? t.progressSeries : []),
-      t.createdAt || null, t.timelapseStatus || null, JSON.stringify(extra),
+      t.createdAt || null, t.timelapseStatus || null, JSON.stringify(extra), t.autoPhase || null, t.lastImageAt || null,
     ]
   );
 }
@@ -208,11 +187,15 @@ const HISTORY_MAX_ENTRIES_PER_TASK = 2000; // ยังใช้จำกัด�
 // เพื่อ "หยิบ" มาบันทึกลงดิสก์ทุก 1 นาทีใน appendTaskHistorySnapshot โดยไม่ต้องดึงภาพจากกล้องซ้ำอีกรอบ
 const lastSnapshotBuffers = new Map(); // taskId -> Buffer (JPEG)
 
+// ภาพล่าสุดที่กล้องโหมด FTP push เข้ามา (ไม่มี RTSP url ให้ ffmpeg ดึงสด) — เก็บไว้ให้
+// /api/cameras/:id/snapshot เสิร์ฟเป็น "ภาพสดล่าสุด" ได้ทันทีที่ภาพเข้ามา ไม่ต้องรอ Task รัน
+const lastFtpSnapshotByCamera = new Map(); // cameraId -> Buffer (JPEG)
+
 async function insertTaskHistoryRow(taskId, entry) {
   await pool.query(
-    `INSERT INTO task_history (task_id, at, blocks, area, people_detected, workers_assigned, snapshot)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [taskId, entry.at, entry.blocks, entry.area, entry.peopleDetected, entry.workersAssigned, entry.snapshot]
+    `INSERT INTO task_history (task_id, at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [taskId, entry.at, entry.blocks, entry.area, entry.peopleDetected, entry.workersAssigned, entry.snapshot, entry.status, entry.progressPct]
   );
 }
 async function queryTaskHistory(taskId, { from, to, limit } = {}) {
@@ -225,14 +208,14 @@ async function queryTaskHistory(taskId, { from, to, limit } = {}) {
   let rows;
   if (n > 0) {
     const res = await pool.query(
-      `SELECT at, blocks, area, people_detected, workers_assigned, snapshot
+      `SELECT at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct
        FROM task_history ${where} ORDER BY at DESC LIMIT $${params.length + 1}`,
       [...params, n]
     );
     rows = res.rows.reverse(); // กลับเป็นลำดับเวลาเก่า->ใหม่ เหมือน list.slice(-n) ของเดิม
   } else {
     const res = await pool.query(
-      `SELECT at, blocks, area, people_detected, workers_assigned, snapshot
+      `SELECT at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct
        FROM task_history ${where} ORDER BY at ASC`,
       params
     );
@@ -241,7 +224,7 @@ async function queryTaskHistory(taskId, { from, to, limit } = {}) {
   return rows.map((r) => ({
     at: r.at.toISOString(), blocks: r.blocks, area: r.area,
     peopleDetected: r.people_detected, workersAssigned: r.workers_assigned,
-    snapshot: r.snapshot || null,
+    snapshot: r.snapshot || null, status: r.status || null, progressPct: r.progress_pct,
   }));
 }
 
@@ -259,16 +242,21 @@ async function appendTaskHistorySnapshot() {
       fs.writeFileSync(path.join(taskDir, filename), buf);
       snapshotUrl = `/snapshots/${t.id}/${filename}`;
       // ลบไฟล์เก่าสุดถ้าเกินโควตา (ผูกกับ HISTORY_MAX_ENTRIES_PER_TASK) กันดิสก์บวมไม่จำกัด
-      const files = fs.readdirSync(taskDir).filter((f) => f.endsWith('.jpg')).sort();
+      const files = fs.readdirSync(taskDir).filter((f) => FRAME_RE.test(f)).sort();
+      const trimmed = [];
       while (files.length > HISTORY_MAX_ENTRIES_PER_TASK) {
-        fs.unlinkSync(path.join(taskDir, files.shift()));
+        const old = files.shift();
+        fs.unlinkSync(path.join(taskDir, old));
+        trimmed.push(`/snapshots/${t.id}/${old}`);
       }
+      forgetSnapshotRefs(trimmed);
     }
 
     try {
       await insertTaskHistoryRow(t.id, {
         at, blocks: t.blocks, area: t.area, peopleDetected: t.peopleDetected || 0,
         workersAssigned: t.workers.length, snapshot: snapshotUrl,
+        status: t.status, progressPct: t.expectedArea ? Math.round((t.area / t.expectedArea) * 1000) / 10 : 0,
       });
     } catch (err) {
       console.error(`[history] insert failed for task ${t.id}:`, err.message);
@@ -280,51 +268,37 @@ async function appendTaskHistorySnapshot() {
    TIME-LAPSE — ต่อภาพ snapshot ทุกนาทีของ Task เป็นวิดีโอ (ffmpeg concat demuxer)
    สร้างอัตโนมัติเมื่อ Task ถูกตั้งสถานะเป็น "เสร็จสิ้น" (ดู PUT /api/tasks/:id)
 ========================================================= */
-function buildTimelapseForTask(taskId, cb) {
-  const dir = path.join(SNAPSHOTS_DIR, taskId);
-  let files = [];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.jpg')).sort();
-  } catch (_) {
-    return cb(new Error('ยังไม่มีภาพ snapshot ของ Task นี้'));
-  }
-  if (files.length === 0) return cb(new Error('ยังไม่มีภาพ snapshot ของ Task นี้'));
-
-  const listLines = files.map((f) => `file '${f}'\nduration 1`);
-  listLines.push(`file '${files[files.length - 1]}'`); // ffmpeg concat quirk: เฟรมสุดท้ายต้องมีบรรทัด file ซ้ำโดยไม่ระบุ duration
-  fs.writeFileSync(path.join(dir, 'concat.txt'), listLines.join('\n'), 'utf-8');
-
-  const proc = spawn(
-    'ffmpeg',
-    ['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-vsync', 'vfr', '-pix_fmt', 'yuv420p', 'timelapse.mp4'],
-    { cwd: dir }
-  );
-  let stderr = '';
-  proc.stderr.on('data', (d) => (stderr += d.toString()));
-  proc.on('close', (code) => {
-    if (code === 0) cb(null, path.join(dir, 'timelapse.mp4'));
-    else cb(new Error(stderr.trim().slice(-500) || 'สร้างวิดีโอไทม์แลปส์ไม่สำเร็จ'));
-  });
-  proc.on('error', (err) => cb(err));
+const timelapseBuilding = new Set(); // taskId ที่กำลังสร้างอยู่ — กันสั่งซ้อนแล้วเขียนไฟล์ชนกัน
+// สร้าง MP4 + GIF (timelapse.js) แล้วอัปเดตสถานะใน DB: building -> ready | failed. คืน false ถ้ามีงานสร้างของ Task นี้ค้างอยู่
+async function startTimelapseBuild(t, actor) {
+  if (timelapseBuilding.has(t.id)) return false;
+  timelapseBuilding.add(t.id);
+  t.timelapseStatus = 'building';
+  await upsertTaskRow(t).catch((err) => console.error('[task] persist timelapseStatus failed:', err.message));
+  buildTimelapse(path.join(SNAPSHOTS_DIR, t.id))
+    .then((r) => {
+      t.timelapseStatus = 'ready';
+      audit('snapshot', 'info', `สร้างไทม์แลปส์ Task "${t.name}" สำเร็จ (${r.frames} ภาพ)`, actor);
+    })
+    .catch((err) => {
+      t.timelapseStatus = 'failed';
+      audit('error', 'error', `สร้างไทม์แลปส์ Task "${t.name}" ไม่สำเร็จ: ${err.message}`, actor);
+    })
+    .finally(() => {
+      timelapseBuilding.delete(t.id);
+      upsertTaskRow(t).catch((e) => console.error('[task] persist timelapseStatus failed:', e.message));
+    });
+  return true;
 }
 
 /* =========================================================
    PERSISTENCE — brick_types (table: brick_types)
    blocksPerSqm = อิฐ/บล็อกกี่ก้อน เท่ากับพื้นที่ 1 ตารางเมตร (ผู้ใช้กำหนดเองผ่าน UI)
 ========================================================= */
-const DEFAULT_BRICK_TYPES = [
-  { id: 'bt1', name: 'อิฐบล็อก', blocksPerSqm: 12.5 },
-  { id: 'bt2', name: 'อิฐมวลเบา', blocksPerSqm: 8.3 },
-  { id: 'bt3', name: 'อิฐมอญ', blocksPerSqm: 80 },
-];
 function brickTypeRowToObj(row) {
   return { id: row.id, name: row.name, blocksPerSqm: Number(row.blocks_per_sqm), classId: row.class_id };
 }
 async function loadBrickTypesFromDB() {
-  const { rows: countRows } = await pool.query('SELECT count(*)::int AS n FROM brick_types');
-  if (countRows[0].n === 0) {
-    for (const b of DEFAULT_BRICK_TYPES) await upsertBrickTypeRow({ ...b, classId: null });
-  }
   const { rows } = await pool.query('SELECT * FROM brick_types ORDER BY id');
   return rows.map(brickTypeRowToObj);
 }
@@ -351,27 +325,11 @@ const PAGE_KEYS = ['home', 'task', 'dashboard', 'reports', 'logs', 'settings'];
 function allPerms(value) {
   return PAGE_KEYS.reduce((acc, k) => ({ ...acc, [k]: value }), {});
 }
-// Role คงที่ 3 แบบเท่านั้น (locked: true) — แก้ได้แค่ permissions เพิ่ม/ลบ/เปลี่ยนชื่อไม่ได้
-const DEFAULT_ROLES = [
-  { id: 'admin', name: 'Admin', locked: true, permissions: allPerms(true) },
-  {
-    id: 'engineer', name: 'Engineer', locked: true,
-    permissions: { home: true, task: true, dashboard: true, reports: true, logs: true, settings: false },
-  },
-  {
-    id: 'viewer', name: 'Viewer', locked: true,
-    permissions: { home: true, task: false, dashboard: true, reports: true, logs: false, settings: false },
-  },
-];
 const LOCKED_ROLE_IDS = new Set(['admin', 'engineer', 'viewer']);
 function roleRowToObj(row) {
   return { id: row.id, name: row.name, permissions: row.permissions || {}, locked: LOCKED_ROLE_IDS.has(row.id) ? true : row.locked };
 }
 async function loadRolesFromDB() {
-  const { rows: countRows } = await pool.query('SELECT count(*)::int AS n FROM roles');
-  if (countRows[0].n === 0) {
-    for (const r of DEFAULT_ROLES) await upsertRoleRow(r);
-  }
   const { rows } = await pool.query('SELECT * FROM roles ORDER BY id');
   return rows.map(roleRowToObj);
 }
@@ -392,23 +350,13 @@ function findRoleByName(name) {
 
 /* =========================================================
    PERSISTENCE — users (table: users) — บัญชีผู้ใช้งาน + ใช้ login เข้าระบบ
-   หมายเหตุ: เป็นระบบ mockup — เก็บรหัสผ่านแบบ plain text เหมือนเดิม (ย้ายที่เก็บจากไฟล์ JSON
-   มาเป็นตาราง Postgres เฉย ๆ ไม่ได้เพิ่มการเข้ารหัส) ไม่เหมาะกับ production จริง
-   (ควร hash และใช้ session/JWT ที่ปลอดภัยกว่านี้)
+   รหัสผ่านเก็บเป็น bcrypt hash เท่านั้น (hash ทุกครั้งก่อนเขียนลง DB) — ไม่มีบัญชี/รหัสตั้งต้นในโค้ด
+   สร้างบัญชีแรกด้วย scripts/seed-users.js
 ========================================================= */
-const DEFAULT_USERS = [
-  { id: 'u1', name: 'Admin User', email: 'admin@civil.co', username: 'admin', password: 'password', role: 'Admin' },
-  { id: 'u2', name: 'วิศวกร กิจงาน', email: 'engineer@civil.co', username: 'engineer', password: 'password', role: 'Engineer' },
-  { id: 'u3', name: 'ผู้บริหาร ดูงาน', email: 'viewer@civil.co', username: 'viewer', password: 'password', role: 'Viewer' },
-];
 function userRowToObj(row) {
   return { id: row.id, name: row.name, email: row.email, username: row.username, password: row.password, role: row.role };
 }
 async function loadUsersFromDB() {
-  const { rows: countRows } = await pool.query('SELECT count(*)::int AS n FROM users');
-  if (countRows[0].n === 0) {
-    for (const u of DEFAULT_USERS) await upsertUserRow(u);
-  }
   const { rows } = await pool.query('SELECT * FROM users ORDER BY id');
   return rows.map(userRowToObj);
 }
@@ -431,39 +379,13 @@ function publicUser(u) {
   const { password, ...pub } = u;
   return pub;
 }
-// รหัสผ่านเก็บแบบ bcrypt hash ทั้งหมด — ฟังก์ชันนี้ตรวจ/แปลงรหัสผ่าน plaintext เก่า (จาก users.json เดิม
-// หรือ DEFAULT_USERS ตอน seed ครั้งแรก) ให้เป็น hash อัตโนมัติตอน boot ครั้งเดียว ไม่ต้องรันสคริปต์แยก
-function isBcryptHash(pw) {
-  return typeof pw === 'string' && /^\$2[aby]\$\d{2}\$/.test(pw);
-}
-async function hashLegacyPlaintextPasswords() {
-  for (const u of users) {
-    if (!isBcryptHash(u.password)) {
-      u.password = await bcrypt.hash(u.password, 10);
-      await upsertUserRow(u);
-    }
-  }
-}
-
 /* =========================================================
    PERSISTENCE — workers (table: workers) — แรงงาน master list
 ========================================================= */
-const DEFAULT_WORKERS = [
-  { id: 'w1', name: 'สมชาย ใจดี', role: 'ช่างก่อสร้าง' },
-  { id: 'w2', name: 'ประยุทธ ทองแดง', role: 'ช่างก่อสร้าง' },
-  { id: 'w3', name: 'วิชัย รุ่งเรือง', role: 'หัวหน้าช่าง' },
-  { id: 'w4', name: 'อนุชา ศรีสุข', role: 'ช่างก่อสร้าง' },
-  { id: 'w5', name: 'มานพ พูลสวัสดิ์', role: 'ช่างก่อสร้าง' },
-  { id: 'w6', name: 'ธีระ วงศ์สกุล', role: 'ช่างก่อสร้าง' },
-];
 function workerRowToObj(row) {
   return { id: row.id, name: row.name, role: row.role };
 }
 async function loadWorkersFromDB() {
-  const { rows: countRows } = await pool.query('SELECT count(*)::int AS n FROM workers');
-  if (countRows[0].n === 0) {
-    for (const w of DEFAULT_WORKERS) await upsertWorkerRow(w);
-  }
   const { rows } = await pool.query('SELECT * FROM workers ORDER BY id');
   return rows.map(workerRowToObj);
 }
@@ -482,9 +404,6 @@ let workersMaster = [];
 /* =========================================================
    PERSISTENCE — alert_config (table: alert_config, single row) — Discord webhook + สวิตช์แจ้งเตือน
 ========================================================= */
-const DEFAULT_ALERT_CONFIG = {
-  webhook: '', cameraOffline: true, serverOffline: true, aiStopped: true, internetDown: false, noImage: true,
-};
 function alertConfigRowToObj(row) {
   return {
     webhook: row.webhook, cameraOffline: row.camera_offline, serverOffline: row.server_offline,
@@ -493,10 +412,7 @@ function alertConfigRowToObj(row) {
 }
 async function loadAlertConfigFromDB() {
   const { rows } = await pool.query('SELECT * FROM alert_config WHERE id=1');
-  if (rows.length === 0) {
-    await saveAlertConfigDB(DEFAULT_ALERT_CONFIG);
-    return { ...DEFAULT_ALERT_CONFIG };
-  }
+  if (rows.length === 0) throw new Error('alert_config row missing — run migrations');
   return alertConfigRowToObj(rows[0]);
 }
 async function saveAlertConfigDB(cfg) {
@@ -514,16 +430,12 @@ let alertConfig = {};
 /* =========================================================
    PERSISTENCE — storage_config (table: storage_config, single row) — autoDelete / retentionDays
 ========================================================= */
-const DEFAULT_STORAGE_CONFIG = { autoDelete: true, retentionDays: 60 };
 function storageConfigRowToObj(row) {
   return { autoDelete: row.auto_delete, retentionDays: row.retention_days };
 }
 async function loadStorageConfigFromDB() {
   const { rows } = await pool.query('SELECT * FROM storage_config WHERE id=1');
-  if (rows.length === 0) {
-    await saveStorageConfigDB(DEFAULT_STORAGE_CONFIG);
-    return { ...DEFAULT_STORAGE_CONFIG };
-  }
+  if (rows.length === 0) throw new Error('storage_config row missing — run migrations');
   return storageConfigRowToObj(rows[0]);
 }
 async function saveStorageConfigDB(cfg) {
@@ -618,12 +530,32 @@ app.put('/api/cameras/:id', async (req, res) => {
   }
 });
 
+// ตั้งค่ามุมภาพของกล้อง (หมุน/พลิก/ซูม) — ตั้งครั้งเดียวต่อกล้อง ใช้กับทุก Task ที่ผูกกล้องนี้
+app.put('/api/cameras/:id/view', async (req, res) => {
+  const cam = findCamera(req.params.id);
+  if (!cam) return res.status(404).json({ success: false, message: 'ไม่พบกล้องนี้' });
+  const { view, error } = imageView.parseView(req.body);
+  if (error) return res.status(400).json({ success: false, message: error });
+  const before = cam.view;
+  cam.view = imageView.isIdentity(view) ? undefined : view;
+  if (cam.view === undefined) delete cam.view;
+  try {
+    await upsertCameraRow(cam);
+    audit('camera', 'info', `ตั้งค่ามุมภาพกล้อง "${cam.name}" (หมุน ${view.rotate}°${view.flipH ? ', พลิกซ้าย-ขวา' : ''}${view.flipV ? ', พลิกบน-ล่าง' : ''}, ซูม ${view.zoom}×)`, req.user.username);
+    res.json({ success: true, camera: cam });
+  } catch (err) {
+    if (before === undefined) delete cam.view; else cam.view = before;
+    res.status(500).json({ success: false, message: 'บันทึกการตั้งค่ามุมภาพไม่สำเร็จ', raw: err.message });
+  }
+});
+
 app.delete('/api/cameras/:id', async (req, res) => {
   const idx = cameras.findIndex((c) => c.id === req.params.id);
   if (idx === -1) return res.status(404).json({ success: false, message: 'ไม่พบกล้องนี้' });
   try {
     await deleteCameraRow(req.params.id);
     cameras.splice(idx, 1);
+    lastFtpSnapshotByCamera.delete(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: 'ลบกล้องไม่สำเร็จ', raw: err.message });
@@ -635,7 +567,7 @@ app.delete('/api/cameras/:id', async (req, res) => {
 ========================================================= */
 
 function withLastDetection(t) {
-  return { ...t, lastDetection: lastDetections.get(t.id) || null };
+  return { ...t, lastDetection: lastDetections.get(t.id) || null, imageLost: lostImageTasks.has(t.id) };
 }
 
 app.get('/api/tasks', (req, res) => {
@@ -704,12 +636,7 @@ app.put('/api/tasks/:id', async (req, res) => {
 
   // Task เพิ่งเปลี่ยนเป็น "เสร็จสิ้น" -> ต่อภาพ snapshot ทุกนาทีที่เก็บไว้เป็นไทม์แลปส์อัตโนมัติ (async ไม่บล็อก response)
   if (!wasFinished && t.status === 'finished') {
-    t.timelapseStatus = 'building';
-    await upsertTaskRow(t).catch((err) => console.error('[task] persist timelapseStatus failed:', err.message));
-    buildTimelapseForTask(t.id, (err) => {
-      t.timelapseStatus = err ? 'failed' : 'ready';
-      upsertTaskRow(t).catch((e) => console.error('[task] persist timelapseStatus failed:', e.message));
-    });
+    startTimelapseBuild(t, req.user.username);
   }
 
   res.json(t);
@@ -737,23 +664,24 @@ app.delete('/api/tasks/:id', async (req, res) => {
 app.post('/api/tasks/:id/timelapse/build', async (req, res) => {
   const t = findTask(req.params.id);
   if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
-  t.timelapseStatus = 'building';
-  await upsertTaskRow(t).catch((err) => console.error('[task] persist timelapseStatus failed:', err.message));
-  buildTimelapseForTask(t.id, (err) => {
-    t.timelapseStatus = err ? 'failed' : 'ready';
-    upsertTaskRow(t).catch((e) => console.error('[task] persist timelapseStatus failed:', e.message));
-  });
-  res.json({ success: true, message: 'กำลังสร้างวิดีโอไทม์แลปส์ (อาจใช้เวลาสักครู่ตามจำนวนภาพ)' });
+  if (!(await startTimelapseBuild(t, req.user.username))) {
+    return res.status(409).json({ success: false, message: 'กำลังสร้างไทม์แลปส์ของ Task นี้อยู่แล้ว — รอสักครู่' });
+  }
+  res.status(202).json({ success: true, message: 'กำลังสร้างวิดีโอ MP4 และ GIF (อาจใช้เวลาสักครู่ตามจำนวนภาพ)' });
 });
 
+// ?format=mp4|gif (ค่าเริ่มต้น mp4) — ?inline=1 ให้ <video>/<img> เล่นในหน้าเว็บได้ (รองรับ Range), ไม่ใส่ = ดาวน์โหลดเป็นไฟล์
 app.get('/api/tasks/:id/timelapse', (req, res) => {
   const t = findTask(req.params.id);
   if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
-  const file = path.join(SNAPSHOTS_DIR, t.id, 'timelapse.mp4');
+  const format = req.query.format === 'gif' ? 'gif' : 'mp4';
+  const file = path.join(SNAPSHOTS_DIR, t.id, `timelapse.${format}`);
   if (!fs.existsSync(file)) {
-    return res.status(404).json({ success: false, message: 'ยังไม่มีวิดีโอไทม์แลปส์ของ Task นี้ — ตั้งสถานะเป็น "เสร็จสิ้น" หรือกดสร้างใหม่ก่อน' });
+    return res.status(404).json({ success: false, message: `ยังไม่มีไฟล์ ${format.toUpperCase()} ของ Task นี้ — กด "สร้างใหม่" ก่อน` });
   }
-  res.download(file, `${t.name}-timelapse.mp4`);
+  const safeName = `${t.name.replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || 'task'}-timelapse.${format}`;
+  if (req.query.inline) return res.sendFile(file);
+  res.download(file, safeName);
 });
 
 /* =========================================================
@@ -830,20 +758,40 @@ app.delete('/api/bricktypes/:id', async (req, res) => {
 });
 
 /* =========================================================
-   AUTH — LOGIN (mockup: ตรวจ username/password ตรงกับตาราง users)
-   ไม่มี session/JWT จริง — ฝั่งหน้าเว็บเก็บ user object ไว้ใน localStorage เอง
+   AUTH — session cookie (HttpOnly) เก็บใน table sessions, รหัสผ่านเป็น bcrypt hash ใน table users
 ========================================================= */
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ success: false, message: 'กรุณากรอก username และ password' });
   }
+  const wait = auth.lockedFor(req, username);
+  if (wait) {
+    return res.status(429).json({ success: false, message: `ลองผิดหลายครั้งเกินไป — รออีก ${Math.ceil(wait / 60)} นาที` });
+  }
   const user = users.find((u) => u.username.toLowerCase() === String(username).trim().toLowerCase());
   const ok = user && (await bcrypt.compare(password, user.password).catch(() => false));
   if (!ok) {
+    auth.recordFail(req, username);
+    audit('auth', 'warn', `เข้าสู่ระบบไม่สำเร็จ (username: ${String(username).trim().slice(0, 50)})`, null);
     return res.status(401).json({ success: false, message: 'username หรือ password ไม่ถูกต้อง' });
   }
-  res.json({ success: true, user: publicUser(user) });
+  auth.clearFails(req, username);
+  try {
+    auth.setCookie(req, res, await auth.createSession(req, user.id));
+    audit('auth', 'info', `${user.username} เข้าสู่ระบบ`, user.username);
+    res.json({ success: true, user: publicUser(user) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'สร้าง session ไม่สำเร็จ', raw: err.message });
+  }
+});
+
+app.get('/api/me', (req, res) => res.json({ success: true, user: publicUser(req.user) }));
+
+app.post('/api/logout', async (req, res) => {
+  await auth.destroySession(req).catch(() => {});
+  auth.clearCookie(req, res);
+  res.json({ success: true });
 });
 
 /* =========================================================
@@ -871,6 +819,7 @@ app.post('/api/users', async (req, res) => {
   try {
     await upsertUserRow(user);
     users.push(user);
+    audit('edit', 'info', `สร้างผู้ใช้งาน ${user.username} (${user.role})`, req.user.username);
     res.status(201).json(publicUser(user));
   } catch (err) {
     res.status(500).json({ success: false, message: 'สร้างผู้ใช้งานไม่สำเร็จ', raw: err.message });
@@ -892,6 +841,8 @@ app.put('/api/users/:id', async (req, res) => {
   if (role !== undefined) u.role = role;
   try {
     await upsertUserRow(u);
+    if (password && u.id !== req.user.id) await auth.destroyUserSessions(u.id); // เปลี่ยนรหัสคนอื่น -> ออกจากระบบทุกเครื่อง
+    audit('edit', 'info', `แก้ไขผู้ใช้งาน ${u.username}`, req.user.username);
     res.json(publicUser(u));
   } catch (err) {
     res.status(500).json({ success: false, message: 'บันทึกผู้ใช้งานไม่สำเร็จ', raw: err.message });
@@ -902,8 +853,10 @@ app.delete('/api/users/:id', async (req, res) => {
   const idx = users.findIndex((u) => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ success: false, message: 'ไม่พบผู้ใช้งานนี้' });
   if (users.length <= 1) return res.status(400).json({ success: false, message: 'ต้องมีผู้ใช้งานอย่างน้อย 1 คนในระบบ' });
+  if (req.params.id === req.user.id) return res.status(400).json({ success: false, message: 'ลบบัญชีที่กำลังใช้งานอยู่ไม่ได้' });
   try {
-    await deleteUserRow(req.params.id);
+    audit('edit', 'warn', `ลบผู้ใช้งาน ${users[idx].username}`, req.user.username);
+    await deleteUserRow(req.params.id); // sessions ของผู้ใช้นี้ถูกลบตาม ON DELETE CASCADE
     users.splice(idx, 1);
     res.json({ success: true });
   } catch (err) {
@@ -1106,6 +1059,13 @@ app.put('/api/storage', async (req, res) => {
   }
 });
 
+// ไฟล์ภาพถูกลบแล้ว -> เคลียร์ path ใน task_history เป็น NULL ด้วย (ไม่งั้นหน้า Report/ไทม์แลปส์ชี้ไปหาภาพที่ไม่มีอยู่ = ภาพไม่ขึ้น)
+function forgetSnapshotRefs(urls) {
+  if (!urls.length) return;
+  pool.query('UPDATE task_history SET snapshot = NULL WHERE snapshot = ANY($1::text[])', [urls])
+    .catch((err) => console.error('[snapshots] clear stale refs failed:', err.message));
+}
+
 // ลบ snapshot ที่เก่ากว่า retentionDays ทิ้งจริง — รันเป็นรอบ (ดู setInterval ด้านล่าง)
 function sweepOldSnapshots() {
   if (!storageConfig.autoDelete) return;
@@ -1120,72 +1080,142 @@ function sweepOldSnapshots() {
     const dir = path.join(SNAPSHOTS_DIR, d.name);
     let files;
     try {
-      files = fs.readdirSync(dir).filter((f) => f.endsWith('.jpg'));
+      files = fs.readdirSync(dir).filter((f) => FRAME_RE.test(f));
     } catch (_) {
       return;
     }
+    const removed = [];
     files.forEach((f) => {
       const full = path.join(dir, f);
       try {
-        if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
+        if (fs.statSync(full).mtimeMs < cutoff) { fs.unlinkSync(full); removed.push(`/snapshots/${d.name}/${f}`); }
       } catch (_) {}
     });
+    forgetSnapshotRefs(removed);
   });
 }
 
-// สำรองข้อมูล — bundle ข้อมูลหลักจาก Postgres (ไม่รวมภาพ snapshot เพราะอาจใหญ่มาก) เป็น .tar.gz แล้วให้ดาวน์โหลด
-// เดิม endpoint นี้ก็อปไฟล์ JSON ตรง ๆ; ตอนนี้ query จาก Postgres มา dump เป็น JSON ชื่อไฟล์เดิมแทน (ฟังก์ชัน/response shape เดิม)
-app.post('/api/storage/backup', async (req, res) => {
-  if (!fs.existsSync(BACKUPS_DIR)) fs.mkdirSync(BACKUPS_DIR, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const stagingDir = path.join(BACKUPS_DIR, `.staging-${stamp}`);
-  fs.mkdirSync(stagingDir, { recursive: true });
-  try {
-    const dumps = {
-      'tasks.json': tasks,
-      'cameras.json': cameras,
-      'users.json': users,
-      'roles.json': roles,
-      'brickTypes.json': brickTypes,
-      'workers.json': workersMaster,
-      'alertConfig.json': alertConfig,
-      'storageConfig.json': storageConfig,
-    };
-    // taskHistory.json ยกเว้นการดึงทั้งหมดถ้าใหญ่มาก — ดึงมาเท่าที่มีจริงต่อ task (ตารางนี้โตต่อเนื่องไม่มี cap)
-    const taskHistoryDump = {};
-    for (const t of tasks) {
-      const list = await queryTaskHistory(t.id, {});
-      if (list.length) taskHistoryDump[t.id] = list;
+// สำรองข้อมูล — pg_dump ทั้งฐานข้อมูล (ทุกตาราง รวมผู้ใช้/Task/ประวัติ) เป็นไฟล์ .dump (custom format)
+// กู้คืนด้วย: pg_restore -d <db> --clean --if-exists civil-backup-*.dump
+// ไม่รวมไฟล์ภาพ snapshot (อยู่ที่ snapshots/ บนดิสก์ — ขนาดใหญ่ ให้สำรองแยกด้วย rsync)
+const BACKUP_KEEP = Number(process.env.BACKUP_KEEP) || 14;
+function runPgDump(outPath) {
+  return new Promise((resolve, reject) => {
+    const args = ['--format=custom', '--no-owner', '--file', outPath];
+    if (process.env.DATABASE_URL) args.push(process.env.DATABASE_URL);
+    else args.push(process.env.PGDATABASE || 'civil');
+    const env = { ...process.env };
+    if (!process.env.DATABASE_URL) {
+      env.PGHOST = process.env.PGHOST || '127.0.0.1';
+      env.PGPORT = String(Number(process.env.PGPORT) || 5432);
+      env.PGUSER = process.env.PGUSER || 'civil_app';
+      env.PGPASSWORD = process.env.PGPASSWORD || '';
     }
-    dumps['taskHistory.json'] = taskHistoryDump;
-
-    const filesToBackup = Object.keys(dumps);
-    filesToBackup.forEach((f) => {
-      fs.writeFileSync(path.join(stagingDir, f), JSON.stringify(dumps[f], null, 2), 'utf-8');
-    });
-
-    const filename = `civil-backup-${stamp}.tar.gz`;
-    const outPath = path.join(BACKUPS_DIR, filename);
-    const proc = spawn('tar', ['-czf', outPath, '-C', stagingDir, ...filesToBackup]);
+    const proc = spawn('pg_dump', args, { env });
     let stderr = '';
     proc.stderr.on('data', (d) => (stderr += d.toString()));
-    proc.on('close', (code) => {
-      fs.rmSync(stagingDir, { recursive: true, force: true });
-      if (code === 0) {
-        res.download(outPath, filename);
-      } else {
-        res.status(500).json({ success: false, message: 'สำรองข้อมูลไม่สำเร็จ', raw: stderr.trim().slice(-500) });
-      }
-    });
-    proc.on('error', (err) => {
-      fs.rmSync(stagingDir, { recursive: true, force: true });
-      res.status(500).json({ success: false, message: 'รันคำสั่ง tar ไม่สำเร็จ', raw: err.message });
-    });
+    proc.on('error', (err) => reject(new Error(`รัน pg_dump ไม่ได้ (ติดตั้ง postgresql-client?): ${err.message}`)));
+    proc.on('close', (code) => (code === 0 ? resolve(outPath) : reject(new Error(stderr.trim().slice(-500) || `pg_dump exit ${code}`))));
+  });
+}
+async function createBackupFile() {
+  if (!fs.existsSync(BACKUPS_DIR)) fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+  const filename = `civil-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.dump`;
+  const outPath = path.join(BACKUPS_DIR, filename);
+  try {
+    await runPgDump(outPath);
   } catch (err) {
-    fs.rmSync(stagingDir, { recursive: true, force: true });
+    fs.rmSync(outPath, { force: true });
+    throw err;
+  }
+  const old = fs.readdirSync(BACKUPS_DIR).filter((f) => /^civil-backup-.*\.dump$/.test(f)).sort().slice(0, -BACKUP_KEEP);
+  old.forEach((f) => fs.rmSync(path.join(BACKUPS_DIR, f), { force: true }));
+  return { filename, outPath };
+}
+app.post('/api/storage/backup', async (req, res) => {
+  try {
+    const { filename, outPath } = await createBackupFile();
+    audit('snapshot', 'info', `สำรองฐานข้อมูล ${filename}`, req.user.username);
+    res.download(outPath, filename);
+  } catch (err) {
+    audit('error', 'error', `สำรองฐานข้อมูลไม่สำเร็จ: ${err.message}`, req.user.username);
     res.status(500).json({ success: false, message: 'สำรองข้อมูลไม่สำเร็จ', raw: err.message });
   }
 });
+
+/* =========================================================
+   AUTO START / PAUSE ตามเวลาทำงาน (schedule.js) — ทุก 15 วินาที เทียบเวลา Asia/Bangkok
+   เปลี่ยนสถานะเฉพาะตอน "ข้ามเส้นเวลา" (เริ่มงาน / เริ่มพัก / จบพัก / เลิกงาน) ผู้ใช้กดเองระหว่างช่วงได้
+   ไม่แตะ Task ที่ finished — สถานะเสร็จสิ้นต้องกดเองเท่านั้น
+========================================================= */
+const APP_TIMEZONE = process.env.APP_TIMEZONE || schedule.DEFAULT_TZ;
+const PHASE_LABEL = { work: 'เริ่มงาน', break: 'เริ่มพัก', off: 'เลิกงาน' };
+async function scheduleTick() {
+  const nowMin = schedule.minutesNow(new Date(), APP_TIMEZONE);
+  for (const t of tasks) {
+    const { phase, status } = schedule.evaluate(t, nowMin);
+    if (phase === (t.autoPhase || null) && !status) continue;
+    const prev = { status: t.status, autoPhase: t.autoPhase, lastUpdate: t.lastUpdate };
+    if (phase) t.autoPhase = phase; else delete t.autoPhase;
+    if (status) t.status = status;
+    if (status) t.lastUpdate = `${status === 'running' ? 'เริ่ม' : 'พัก'}อัตโนมัติ (${PHASE_LABEL[phase]})`;
+    try {
+      await upsertTaskRow(t);
+      if (status) {
+        audit('task', 'info', `Task "${t.name}" ${status === 'running' ? 'เริ่มการตรวจจับ' : 'พักการตรวจจับ'}อัตโนมัติ — ${PHASE_LABEL[phase]}`);
+      }
+    } catch (err) {
+      t.status = prev.status; t.autoPhase = prev.autoPhase; t.lastUpdate = prev.lastUpdate; // DB เขียนไม่สำเร็จ -> คืนค่า cache ให้ตรงกับ DB แล้วลองใหม่รอบหน้า
+      console.error(`[schedule] task ${t.id}:`, err.message);
+    }
+  }
+}
+
+/* =========================================================
+   LOSS DATA WATCHER — Task ที่กำลังทำงานแต่ไม่มีภาพเข้ามาเกิน (snapshotInterval + NO_IMAGE_SECONDS)
+   -> ขึ้นสถานะ "Loss data" (หน้าจอแสดงผ่าน task.imageLost) + แจ้งเตือน แล้วรอเช็คต่อเรื่อย ๆ
+   ภาพกลับมาเมื่อไหร่ (lastImageAt ใหม่) สถานะกลับเป็นปกติเอง — ตัวเช็คนี้อ่านอย่างเดียว
+   ไม่ยุ่งกับช่องทางรับภาพ (FTP / RTSP) ใช้แค่ t.lastImageAt ที่ pipeline ตรวจจับบันทึกไว้
+========================================================= */
+const NO_IMAGE_SECONDS = Number(process.env.NO_IMAGE_SECONDS) || 15;
+const lostImageTasks = new Set(); // taskId ที่อยู่ในสถานะ Loss data
+const runningSince = new Map(); // taskId -> epoch ms ที่เห็นว่าเริ่ม running (กัน false alarm ตอนเพิ่งกดเริ่ม/หลัง restart)
+async function sendDiscordAlert(text) {
+  const webhook = (alertConfig.webhook || '').trim();
+  if (!webhook) return;
+  try {
+    await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }) });
+  } catch (err) {
+    console.error('[alert] discord send failed:', err.message);
+  }
+}
+async function imageWatchTick() {
+  const now = Date.now();
+  for (const t of tasks) {
+    // เฉพาะ Task ที่ระบบควรได้รับภาพไปตรวจจับจริง (running + มีกล้อง + มี ROI) — ไม่มี ROI = ไม่มีการประมวลผลภาพ จึงไม่ใช่ "Loss"
+    if (t.status !== 'running' || !t.cameraId || !t.roi || t.roi.length < 3) {
+      runningSince.delete(t.id);
+      lostImageTasks.delete(t.id);
+      continue;
+    }
+    if (!runningSince.has(t.id)) runningSince.set(t.id, now);
+    const lastMs = t.lastImageAt ? new Date(t.lastImageAt).getTime() : 0;
+    const ageMs = now - Math.max(lastMs, runningSince.get(t.id));
+    const limitMs = ((Number(t.snapshotInterval) || 30) + NO_IMAGE_SECONDS) * 1000;
+    const lost = ageMs > limitMs;
+    if (lost && !lostImageTasks.has(t.id)) {
+      lostImageTasks.add(t.id);
+      t.cameraStatus = 'disconnect';
+      await upsertTaskRow(t).catch((e) => console.error('[watch] persist failed:', e.message));
+      audit('camera', 'error', `Task "${t.name}" ไม่ได้รับภาพจากกล้องนาน ${Math.round(ageMs / 1000)} วินาที (Loss data)`);
+      if (alertConfig.noImage) sendDiscordAlert(`⚠️ CIVIL — Task "${t.name}" ไม่ได้รับภาพจากกล้องเกิน ${Math.round(limitMs / 1000)} วินาที (Loss data)`);
+    } else if (!lost && lostImageTasks.has(t.id)) {
+      lostImageTasks.delete(t.id);
+      audit('camera', 'info', `Task "${t.name}" ได้รับภาพจากกล้องอีกครั้ง — กลับสู่ปกติ`);
+      if (alertConfig.noImage) sendDiscordAlert(`✅ CIVIL — Task "${t.name}" ได้รับภาพจากกล้องอีกครั้งแล้ว`);
+    }
+  }
+}
 
 /* =========================================================
    AI DETECTION — YOLOv11 (proxy ไปที่ yolo_service.py)
@@ -1201,7 +1231,16 @@ async function detectFromImageBuffer(t, jpeg) {
     return { success: false, status: 400, message: 'กรุณาวาด ROI ของ Task นี้ก่อนเริ่มตรวจจับ' };
   }
 
+  t.lastImageAt = new Date().toISOString(); // ภาพมาถึงแล้ว (ตัวเช็ค "Loss data" ดูค่านี้) — persist ตอน upsertTaskRow ด้านล่าง
   try {
+    // ปรับมุมภาพ (หมุน/พลิก/ซูม) ตามที่ตั้งไว้ต่อกล้อง ก่อนส่งเข้า YOLO และก่อนเก็บ snapshot —
+    // ROI ของ Task วาดบนภาพที่ปรับแล้ว พิกัดจึงตรงกับที่ YOLO เห็นและภาพใน timeline
+    const cam = t.cameraId ? findCamera(t.cameraId) : null;
+    try {
+      jpeg = await imageView.applyView(jpeg, cam && cam.view);
+    } catch (viewErr) {
+      return { success: false, status: 500, message: 'ปรับมุมภาพ (หมุน/พลิก/ซูม) ไม่สำเร็จ', raw: viewErr.message };
+    }
     const imageBase64 = jpeg.toString('base64');
     lastSnapshotBuffers.set(t.id, jpeg); // เก็บภาพล่าสุดไว้ใน memory ให้ appendTaskHistorySnapshot หยิบไปบันทึกทุก 1 นาที
 
@@ -1390,6 +1429,7 @@ async function handleFtpUpload(cam, fileName) {
     return; // ไฟล์อาจถูกลบ/ย้ายไปแล้วก่อนอ่านทัน
   }
 
+  lastFtpSnapshotByCamera.set(cam.id, jpeg);
   cam.status = 'live';
   upsertCameraRow(cam).catch((e) => console.error('[ftp] persist camera status failed:', e.message));
 
@@ -1556,6 +1596,13 @@ function captureSnapshot(url, timeoutMs = 8000) {
 app.get('/api/cameras/:id/snapshot', async (req, res) => {
   const cam = findCamera(req.params.id);
   if (!cam) return res.status(404).json({ success: false, message: 'ไม่พบกล้องนี้' });
+  if (cam.mode === 'ftp') {
+    const jpeg = lastFtpSnapshotByCamera.get(cam.id);
+    if (!jpeg) return res.status(503).json({ success: false, message: 'ยังไม่มีภาพจากกล้องนี้ — รอกล้อง push เข้ามาก่อน' });
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Cache-Control', 'no-store');
+    return res.send(jpeg);
+  }
   try {
     const jpeg = await captureSnapshot(cam.url, 8000);
     cam.status = 'live';
@@ -1662,11 +1709,14 @@ app.get('*', (req, res) => {
 
 /* =========================================================
    STARTUP — โหลด cache ในหน่วยความจำจาก Postgres ก่อน ค่อยเปิดรับ request
-   (ต้องรัน sql/schema.sql ให้ตารางมีอยู่ก่อน — ดู migrate.js สำหรับข้อมูล demo ชุดเดิม)
+   (runMigrations สร้าง/อัปเดตตารางให้เองก่อนโหลด)
 ========================================================= */
 async function main() {
   try {
     await pool.query('SELECT 1'); // fail fast ถ้าต่อ Postgres ไม่ได้ ดีกว่าเปิด server แล้วพังทีหลัง
+    const applied = await runMigrations(pool);
+    await pool.query("UPDATE tasks SET timelapse_status='failed' WHERE timelapse_status='building'"); // build ถูกขัดจังหวะโดย restart -> เปิดให้กดสร้างใหม่ (ไม่ค้างที่ 'กำลังสร้าง' ตลอดไป)
+    if (applied.length) console.log(`[migrate] applied: ${applied.join(', ')}`);
     [cameras, tasks, brickTypes, roles, users, workersMaster, alertConfig, storageConfig] = await Promise.all([
       loadCamerasFromDB(),
       loadTasksFromDB(),
@@ -1677,7 +1727,6 @@ async function main() {
       loadAlertConfigFromDB(),
       loadStorageConfigFromDB(),
     ]);
-    await hashLegacyPlaintextPasswords(); // แปลงรหัสผ่าน plaintext เก่า (ถ้ามี) เป็น bcrypt hash ครั้งเดียวตอน boot
   } catch (err) {
     console.error('FATAL: could not connect to / load from PostgreSQL:', err.message);
     process.exit(1);
@@ -1685,7 +1734,13 @@ async function main() {
 
   setInterval(() => { appendTaskHistorySnapshot().catch((err) => console.error('[history] tick failed:', err.message)); }, HISTORY_SNAPSHOT_INTERVAL_MS);
   setInterval(sweepOldSnapshots, 60 * 60 * 1000); // เช็คทุก 1 ชั่วโมง
+  setTimeout(sweepOldSnapshots, 30 * 1000); // ไล่เก็บตกหลัง restart/หยุดนาน ไม่รอถึงรอบชั่วโมงถัดไป
+  setInterval(() => auth.sweepExpired().catch(() => {}), 60 * 60 * 1000);
+  setInterval(() => { createBackupFile().then((b) => audit('snapshot', 'info', `สำรองฐานข้อมูลอัตโนมัติ ${b.filename}`)).catch((err) => audit('error', 'error', `สำรองฐานข้อมูลอัตโนมัติไม่สำเร็จ: ${err.message}`)); }, 24 * 60 * 60 * 1000);
   setInterval(autoDetectTick, AUTO_DETECT_TICK_MS);
+  setInterval(() => imageWatchTick().catch((err) => console.error('[watch] tick failed:', err.message)), 5 * 1000);
+  scheduleTick().catch((err) => console.error('[schedule] first tick failed:', err.message));
+  setInterval(() => scheduleTick().catch((err) => console.error('[schedule] tick failed:', err.message)), 15 * 1000);
 
   try {
     await ftpServer.listen();
@@ -1701,16 +1756,16 @@ async function main() {
     console.log(`Snapshot:      GET  /api/cameras/:id/snapshot`);
     console.log(`Live stream:   GET  /api/cameras/:id/stream`);
     console.log(`Brick types:   GET/POST/PUT/DELETE /api/bricktypes`);
-    console.log(`Login:         POST /api/login  { "username": "admin", "password": "password" }`);
+    console.log(`Login:         POST /api/login  { "username", "password" } (session cookie)`);
     console.log(`Users:         GET/POST/PUT/DELETE /api/users`);
     console.log(`Roles:         GET/POST/PUT/DELETE /api/roles`);
     console.log(`AI Detect:     POST /api/tasks/:id/detect  (proxies brick model + person model to ${YOLO_SERVICE_URL})`);
     console.log(`Auto Detect:   continuous realtime loop (tick ${AUTO_DETECT_TICK_MS}ms) for every running task with camera + ROI`);
     console.log(`Task History:  GET  /api/tasks/:id/history?from=&to=&limit=  (snapshot every ${HISTORY_SNAPSHOT_INTERVAL_MS}ms per running task)`);
-    console.log(`Time-lapse:    POST /api/tasks/:id/timelapse/build , GET /api/tasks/:id/timelapse (download mp4, auto-built when task finishes)`);
+    console.log(`Time-lapse:    POST /api/tasks/:id/timelapse/build , GET /api/tasks/:id/timelapse (download mp4, or ?format=gif; auto-built when task finishes)`);
     console.log(`Workers:       GET/POST/PUT/DELETE /api/workers`);
     console.log(`Alerts:        GET/PUT /api/alertconfig , POST /api/alerts/test (real Discord webhook)`);
-    console.log(`Storage:       GET/PUT /api/storage , POST /api/storage/backup (real disk usage + tar.gz backup)`);
+    console.log(`Storage:       GET/PUT /api/storage , POST /api/storage/backup (real disk usage + pg_dump backup, daily auto)`);
     console.log(`FTP ingest:    camera.mode='ftp' cameras push snapshots via FTP/SFTP client to port ${FTP_PORT} instead of server pulling RTSP`);
     console.log(`Postgres:      ${process.env.DATABASE_URL ? 'via DATABASE_URL' : `${process.env.PGHOST || '127.0.0.1'}:${process.env.PGPORT || 5432}/${process.env.PGDATABASE || 'civil'}`}`);
   });

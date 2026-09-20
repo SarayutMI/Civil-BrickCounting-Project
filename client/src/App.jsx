@@ -25,29 +25,29 @@ function allPermsTrue() {
    DB object) is held here and passed down via props.
 =================================================================== */
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const raw = localStorage.getItem('civil_user');
-      return raw ? JSON.parse(raw) : null;
-    } catch (_) {
-      localStorage.removeItem('civil_user');
-      return null;
-    }
-  });
+  // undefined = still asking the server, null = not signed in. The session lives in an HttpOnly
+  // cookie on the server (table sessions) — the browser keeps no user object or token itself.
+  const [currentUser, setCurrentUser] = useState(undefined);
 
-  function handleLogin(user) {
-    try { localStorage.setItem('civil_user', JSON.stringify(user)); } catch (_) { /* ignore */ }
-    setCurrentUser(user);
-  }
-  function handleLogout() {
-    try { localStorage.removeItem('civil_user'); } catch (_) { /* ignore */ }
+  useEffect(() => {
+    let cancelled = false;
+    api.me().then((u) => { if (!cancelled) setCurrentUser(u); });
+    const onUnauthorized = () => setCurrentUser(null);
+    window.addEventListener('civil:unauthorized', onUnauthorized);
+    return () => { cancelled = true; window.removeEventListener('civil:unauthorized', onUnauthorized); };
+  }, []);
+
+  async function handleLogout() {
+    await api.logout();
     setCurrentUser(null);
   }
 
   return (
     <ToastProvider>
       <ModalProvider>
-        {!currentUser ? <Login onLogin={handleLogin} /> : <Shell user={currentUser} onLogout={handleLogout} />}
+        {currentUser === undefined ? null
+          : !currentUser ? <Login onLogin={setCurrentUser} />
+          : <Shell user={currentUser} onLogout={handleLogout} />}
       </ModalProvider>
     </ToastProvider>
   );
@@ -94,7 +94,6 @@ function Shell({ user, onLogout }) {
   // ---- initial load, once logged in ----
   useEffect(() => {
     reloadRoles();
-    reloadUsers();
     reloadCameras();
     reloadBrickTypes();
     reloadWorkers();
@@ -107,6 +106,12 @@ function Shell({ user, onLogout }) {
     const role = roles.find((r) => r.name === user.role);
     return role ? role.permissions : allPermsTrue();
   }, [roles, user.role]);
+
+  // /api/users is settings-only on the server — don't ask for it (and eat a 403) as an Engineer/Viewer
+  useEffect(() => {
+    if (roles.length > 0 && permissions.settings) reloadUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roles.length, permissions.settings]);
 
   useEffect(() => {
     if (roles.length === 0) return; // not loaded yet — don't redirect prematurely
@@ -181,6 +186,7 @@ function Shell({ user, onLogout }) {
               brickTypes={brickTypes}
               workersMaster={workersMaster}
               cameras={cameras}
+              reloadCameras={reloadCameras}
               mergeTask={mergeTask}
               patchTaskRemote={patchTaskRemote}
               reloadTasks={reloadTasks}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import Icon from '../icons/Icon.jsx';
 import StatCard from '../components/StatCard.jsx';
 import { brickName, pct } from '../utils.jsx';
@@ -6,10 +6,9 @@ import * as api from '../api.js';
 
 /* ===================================================================
    Home — ported from app.js renderHome()/renderHomeTimelapses().
-   The finished-task time-lapse gallery cycles each task's snapshot
-   history frames every 400ms in an <img> (fake-GIF preview), starting
-   fresh whenever the finished-task set changes and stopping cleanly
-   when this component unmounts (i.e. user leaves Home).
+   The finished-task gallery previews each task's real time-lapse GIF
+   (built by the server from the per-minute snapshots) and links to the
+   MP4 / GIF downloads.
 =================================================================== */
 export default function Home({ tasks, brickTypes, onOpenTask, onGoTask }) {
   const totalTasks = tasks.length;
@@ -23,36 +22,7 @@ export default function Home({ tasks, brickTypes, onOpenTask, onGoTask }) {
 
   const runningTasks = tasks.filter((x) => x.status === 'running');
   const finishedTasks = useMemo(() => tasks.filter((x) => x.status === 'finished'), [tasks]);
-  const finishedKey = finishedTasks.map((t) => t.id).join(',');
 
-  const imgRefs = useRef({});
-
-  useEffect(() => {
-    let cancelled = false;
-    const timers = [];
-    finishedTasks.forEach(async (t) => {
-      try {
-        const list = await api.getTaskHistory(t.id, { limit: 60 });
-        const frames = list.map((e) => e.snapshot).filter(Boolean);
-        if (cancelled || frames.length === 0) return;
-        const img = imgRefs.current[t.id];
-        if (!img) return;
-        let i = 0;
-        img.src = frames[0];
-        const timer = setInterval(() => {
-          i = (i + 1) % frames.length;
-          const el = imgRefs.current[t.id];
-          if (el) el.src = frames[i];
-        }, 400);
-        timers.push(timer);
-      } catch (_) { /* stay quiet — matches original */ }
-    });
-    return () => {
-      cancelled = true;
-      timers.forEach(clearInterval);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finishedKey]);
 
   return (
     <section id="view-home" className="view active">
@@ -107,7 +77,7 @@ export default function Home({ tasks, brickTypes, onOpenTask, onGoTask }) {
       <div className="card" style={{ marginTop: 18 }}>
         <div className="card-head">
           <h3>ไทม์แลปส์งานที่เสร็จแล้ว</h3>
-          <p className="cell-muted" style={{ fontSize: 12, margin: 0 }}>ต่อภาพ snapshot ที่บันทึกทุก 1 นาที — เล่นวนแบบ GIF หรือดาวน์โหลดเป็นวิดีโอ</p>
+          <p className="cell-muted" style={{ fontSize: 12, margin: 0 }}>ต่อภาพ snapshot ที่บันทึกทุก 1 นาที — ดาวน์โหลดเป็นวิดีโอ MP4 หรือ GIF</p>
         </div>
         <div className="card-body">
           <div id="homeTimelapses" className="gallery">
@@ -115,16 +85,26 @@ export default function Home({ tasks, brickTypes, onOpenTask, onGoTask }) {
               <div className="empty-state"><Icon name="empty" /><div className="e-title">ยังไม่มีงานที่เสร็จ</div><div className="e-desc">ไทม์แลปส์จะขึ้นที่นี่หลัง Task เสร็จสิ้น</div></div>
             ) : finishedTasks.map((t) => (
               <div className="gallery-item" key={t.id}>
-                <img
-                  ref={(el) => { if (el) imgRefs.current[t.id] = el; else delete imgRefs.current[t.id]; }}
-                  className="g-mock"
-                  style={{ width: '100%', height: 110, objectFit: 'cover', display: 'block', background: '#161719' }}
-                  alt=""
-                />
+                {t.timelapseStatus === 'ready' ? (
+                  <img
+                    className="g-mock"
+                    style={{ width: '100%', height: 110, objectFit: 'cover', display: 'block', background: '#161719' }}
+                    src={api.timelapseUrl(t.id, { format: 'gif', inline: true })}
+                    loading="lazy"
+                    alt={`ไทม์แลปส์ ${t.name}`}
+                  />
+                ) : (
+                  <div className="g-mock" style={{ height: 110, display: 'grid', placeItems: 'center', background: '#161719', color: '#a1a1a6', fontSize: 12, textAlign: 'center', padding: 8 }}>
+                    {t.timelapseStatus === 'building' ? 'กำลังสร้างไทม์แลปส์...' : t.timelapseStatus === 'failed' ? 'สร้างไทม์แลปส์ไม่สำเร็จ' : 'ยังไม่มีไทม์แลปส์'}
+                  </div>
+                )}
                 <div className="g-time">{t.name}</div>
-                <div style={{ padding: '0 8px 8px' }}>
-                  <a className="btn btn-secondary btn-sm" style={{ width: '100%' }} href={api.timelapseDownloadUrl(t.id)}>ดาวน์โหลดวิดีโอ</a>
-                </div>
+                {t.timelapseStatus === 'ready' && (
+                  <div style={{ padding: '0 8px 8px', display: 'flex', gap: 6 }}>
+                    <a className="btn btn-secondary btn-sm" style={{ flex: 1 }} href={api.timelapseUrl(t.id, { format: 'mp4' })}>MP4</a>
+                    <a className="btn btn-secondary btn-sm" style={{ flex: 1 }} href={api.timelapseUrl(t.id, { format: 'gif' })}>GIF</a>
+                  </div>
+                )}
               </div>
             ))}
           </div>

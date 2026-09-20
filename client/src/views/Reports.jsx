@@ -3,12 +3,13 @@ import Icon from '../icons/Icon.jsx';
 import StatCard from '../components/StatCard.jsx';
 import BarChart from '../components/charts/BarChart.jsx';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart.jsx';
+import TaskTimeline from '../components/TaskTimeline.jsx';
 import { workerName, statusLabel, StatusBadge, downloadBlob } from '../utils.jsx';
 import { useToast } from '../components/Toast.jsx';
 import * as api from '../api.js';
 
-const LABELS = { daily: 'รายวัน', weekly: 'รายสัปดาห์', monthly: 'รายเดือน', byTask: 'ตามงาน', byWorker: 'ตามแรงงาน' };
-const TABS = [['daily', 'รายวัน'], ['weekly', 'รายสัปดาห์'], ['monthly', 'รายเดือน'], ['byTask', 'ตามงาน'], ['byWorker', 'ตามแรงงาน']];
+const LABELS = { timeline: 'Timeline รายนาที', daily: 'รายวัน', weekly: 'รายสัปดาห์', monthly: 'รายเดือน', byTask: 'ตามงาน', byWorker: 'ตามแรงงาน' };
+const TABS = [['timeline', 'Timeline'], ['daily', 'รายวัน'], ['weekly', 'รายสัปดาห์'], ['monthly', 'รายเดือน'], ['byTask', 'ตามงาน'], ['byWorker', 'ตามแรงงาน']];
 
 function periodRangeForTab(tab) {
   const now = new Date();
@@ -26,7 +27,7 @@ function periodRangeForTab(tab) {
 =================================================================== */
 export default function Reports({ tasks, workersMaster }) {
   const toast = useToast();
-  const [tab, setTab] = useState('daily');
+  const [tab, setTab] = useState('timeline');
   const [timeSeries, setTimeSeries] = useState(null); // {labels, values} | null while loading
 
   const totalBlocks = tasks.reduce((s, t) => s + (t.blocks || 0), 0);
@@ -167,6 +168,9 @@ export default function Reports({ tasks, workersMaster }) {
         <StatCard icon={<Icon name="users" />} label="แรงงานที่มอบหมาย" value={totalWorkersAssigned + ' คน'} />
       </div>
 
+      {tab === 'timeline' && <TaskTimeline tasks={tasks} />}
+
+      {tab !== 'timeline' && (<>
       <div className="card" style={{ marginBottom: 18 }}>
         <div className="card-head"><h3 id="reportChartTitle">{chartTitle}</h3><span id="reportChartHint" className="cell-muted" style={{ fontSize: 12 }}>{chartHint}</span></div>
         <div className="card-body"><div id="reportChart" className="chart">{chart}</div></div>
@@ -210,6 +214,7 @@ export default function Reports({ tasks, workersMaster }) {
           </table>
         </div>
       </div>
+      </>)}
     </section>
   );
 }

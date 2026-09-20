@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Icon from '../icons/Icon.jsx';
 import BentoItem from '../components/BentoItem.jsx';
 import RoiCanvas from '../components/RoiCanvas.jsx';
 import BBoxCanvas from '../components/BBoxCanvas.jsx';
+import CameraStage, { IDENTITY_VIEW, normalizeView, sameView } from '../components/CameraStage.jsx';
 import { StatusBadge, CameraBadge, workerName, pct } from '../utils.jsx';
 import { useToast } from '../components/Toast.jsx';
 import * as api from '../api.js';
@@ -30,7 +31,7 @@ function historyFromParam(period) {
    the 2s poll never clobbers an in-progress edit — same split as the
    original (paintTaskDetail vs refreshTaskLiveFields).
 =================================================================== */
-export default function TaskDetail({ taskId, task, brickTypes, workersMaster, cameras, mergeTask, patchTaskRemote, onBack, onDeleted, reloadTasks }) {
+export default function TaskDetail({ taskId, task, brickTypes, workersMaster, cameras, reloadCameras, mergeTask, patchTaskRemote, onBack, onDeleted, reloadTasks }) {
   const toast = useToast();
 
   // ---- Form state (seeded once per taskId; not touched by polling) ----
@@ -46,11 +47,14 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   const [workerSelectValue, setWorkerSelectValue] = useState('');
   const [streamKey, setStreamKey] = useState(0);
   const [cameraLiveState, setCameraLiveState] = useState('idle'); // idle|connecting|live|error
+  const [ftpFrameUrl, setFtpFrameUrl] = useState(null);
+  const [timelapseError, setTimelapseError] = useState(false);
+  const [natural, setNatural] = useState(null); // {w,h} of the raw camera frame, learned from the <img> once it loads
+  const [viewDraft, setViewDraft] = useState(IDENTITY_VIEW); // rotate/flip/zoom being edited (saved per camera)
 
   const [historyPeriod, setHistoryPeriod] = useState('today');
   const [historyList, setHistoryList] = useState([]);
 
-  const tdTimelapseImgRef = useRef(null);
 
   // Seed form state whenever we switch to a different task.
   useEffect(() => {
@@ -95,31 +99,43 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
     setCameraLiveState(selectedCameraId ? 'connecting' : 'idle');
   }, [selectedCameraId, streamKey]);
 
+  const selectedCamera = cameras.find((c) => c.id === selectedCameraId) || null;
+  const isFtpCamera = selectedCamera?.mode === 'ftp';
+  const timelapseVersion = useMemo(() => String(Date.now()), [task?.timelapseStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+  const savedView = normalizeView(selectedCamera?.view);
+  const viewDirty = !sameView(viewDraft, savedView);
+  const savedViewKey = JSON.stringify(savedView);
+  useEffect(() => { setViewDraft(JSON.parse(savedViewKey)); setNatural(null); }, [selectedCameraId, savedViewKey]);
+
   const streamUrl = useMemo(
-    () => (selectedCameraId ? api.cameraStreamUrl(selectedCameraId, { fps: 6, width: 960 }) : null),
-    [selectedCameraId, streamKey]
+    () => (selectedCameraId && !isFtpCamera ? api.cameraStreamUrl(selectedCameraId, { fps: 6, width: 960 }) : null),
+    [selectedCameraId, isFtpCamera, streamKey]
   );
 
-  // ---- Time-lapse preview frame cycling once status === 'ready' ----
+  // ---- FTP-push camera: ไม่มี RTSP ให้ ffmpeg สตรีมสด — poll ภาพล่าสุดที่กล้อง push
+  // เข้ามาแทน (เหมือนที่ /api/cameras/:id/snapshot เสิร์ฟให้ตั้งแต่ก่อนกด "เริ่มตรวจจับ")
+  // preload ภาพใหม่ก่อนสลับ src จริง กันภาพกะพริบ/หลุดจอเวลา poll พลาดจังหวะ
   useEffect(() => {
-    if (!task || task.status !== 'finished' || task.timelapseStatus !== 'ready') return undefined;
+    if (!selectedCameraId || !isFtpCamera) return undefined;
     let cancelled = false;
-    let timer = null;
-    (async () => {
-      const list = await api.getTaskHistory(taskId, { limit: 120 });
-      const frames = list.map((e) => e.snapshot).filter(Boolean);
-      if (cancelled || frames.length === 0) return;
-      const img = tdTimelapseImgRef.current;
-      if (!img) return;
-      let i = 0;
-      img.src = frames[0];
-      timer = setInterval(() => {
-        i = (i + 1) % frames.length;
-        if (tdTimelapseImgRef.current) tdTimelapseImgRef.current.src = frames[i];
-      }, 400);
-    })();
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [taskId, task?.status, task?.timelapseStatus]);
+    function tick() {
+      const url = api.cameraSnapshotUrl(selectedCameraId);
+      const probe = new Image();
+      probe.onload = () => {
+        if (cancelled) return;
+        setFtpFrameUrl(url);
+        setCameraLiveState('live');
+      };
+      probe.onerror = () => {
+        if (cancelled) return;
+        setCameraLiveState((s) => (s === 'live' ? s : 'error'));
+      };
+      probe.src = url;
+    }
+    tick();
+    const id = setInterval(tick, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [selectedCameraId, isFtpCamera, streamKey]);
 
   if (!task) return null;
 
@@ -136,6 +152,15 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   function refreshTaskCamera() {
     if (selectedCameraId) setStreamKey((k) => k + 1);
     else toast('กรุณาเลือกกล้องก่อน');
+  }
+
+  function patchView(partial) { setViewDraft((v) => ({ ...v, ...partial })); }
+  async function saveView() {
+    if (!selectedCameraId) return;
+    if (task.roi && task.roi.length > 0 && !window.confirm('เปลี่ยนมุมภาพแล้ว ROI ที่วาดไว้ (ของทุก Task ที่ใช้กล้องนี้) จะไม่ตรงกับภาพใหม่ — ต้องวาด ROI ใหม่ ต้องการบันทึกต่อหรือไม่?')) return;
+    const { ok, data } = await api.saveCameraView(selectedCameraId, viewDraft);
+    if (ok) { await reloadCameras(); toast('บันทึกมุมภาพของกล้องแล้ว — ใช้กับทุก Task บนกล้องนี้ (รอบตรวจจับถัดไปเป็นต้นไป)', 'success'); }
+    else toast(data.message || 'บันทึกมุมภาพไม่สำเร็จ');
   }
 
   function addWorkerToTask(wid) {
@@ -202,6 +227,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   async function rebuildTimelapse() {
     const { ok, data } = await api.buildTimelapse(task.id);
     toast(data.message || 'กำลังสร้างวิดีโอ...', ok ? 'success' : 'info');
+    if (ok) mergeTask({ ...task, timelapseStatus: 'building' });
   }
 
   async function deleteTaskItem() {
@@ -215,8 +241,9 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
 
   const cameraMock = (() => {
     if (!selectedCameraId) return <div>ยังไม่ได้เลือกกล้อง<br /><small>เลือก Source ด้านบนเพื่อดูภาพสด</small></div>;
+    if (isFtpCamera && cameraLiveState === 'error') return <div>ยังไม่มีภาพจากกล้องนี้<br /><small>รอกล้อง (บอร์ด FTP push) ส่งภาพเข้ามาก่อน</small></div>;
     if (cameraLiveState === 'error') return <div>เชื่อมต่อสตรีมไม่สำเร็จ<br /><small>ลองกด "รีเฟรชภาพ" หรือตรวจสอบกล้อง</small></div>;
-    return <div>กำลังเชื่อมต่อสตรีม...</div>;
+    return <div>{isFtpCamera ? 'กำลังรอภาพจากกล้อง...' : 'กำลังเชื่อมต่อสตรีม...'}</div>;
   })();
   const liveStateText = !selectedCameraId ? '' : cameraLiveState === 'live' ? '● LIVE' : cameraLiveState === 'error' ? '✕ ไม่สามารถเชื่อมต่อ' : 'กำลังเชื่อมต่อ...';
   const liveStateColor = cameraLiveState === 'live' ? 'var(--green)' : cameraLiveState === 'error' ? 'var(--danger)' : 'var(--muted)';
@@ -258,21 +285,60 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
               <button className="btn btn-secondary btn-sm" onClick={refreshTaskCamera}>รีเฟรชภาพ</button>
               <span style={{ fontSize: 12, color: liveStateColor }}>{liveStateText}</span>
             </div>
+            {selectedCameraId && (
+              <div className="view-tools">
+                <span className="cell-muted" style={{ fontSize: 12 }}>มุมภาพ (ตั้งครั้งเดียวต่อกล้อง):</span>
+                <button className="btn btn-secondary btn-sm" onClick={() => patchView({ rotate: (viewDraft.rotate + 270) % 360 })} title="หมุนซ้าย 90°">↺ 90°</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => patchView({ rotate: (viewDraft.rotate + 90) % 360 })} title="หมุนขวา 90°">↻ 90°</button>
+                <button className="btn btn-secondary btn-sm" aria-pressed={viewDraft.flipH} onClick={() => patchView({ flipH: !viewDraft.flipH })}>⇄ พลิกซ้าย-ขวา</button>
+                <button className="btn btn-secondary btn-sm" aria-pressed={viewDraft.flipV} onClick={() => patchView({ flipV: !viewDraft.flipV })}>⇅ พลิกบน-ล่าง</button>
+                <label>ซูม
+                  <input type="range" min="1" max="5" step="0.1" value={viewDraft.zoom} onChange={(e) => patchView({ zoom: Math.round(Number(e.target.value) * 10) / 10 })} />
+                  <span className="text-mono">{viewDraft.zoom.toFixed(1)}×</span>
+                </label>
+                {viewDraft.zoom > 1 && (
+                  <>
+                    <label>เลื่อนซ้าย-ขวา <input type="range" min="0" max="1" step="0.01" value={viewDraft.cx} onChange={(e) => patchView({ cx: Number(e.target.value) })} /></label>
+                    <label>เลื่อนบน-ล่าง <input type="range" min="0" max="1" step="0.01" value={viewDraft.cy} onChange={(e) => patchView({ cy: Number(e.target.value) })} /></label>
+                  </>
+                )}
+                <button className="btn btn-ghost btn-sm" onClick={() => setViewDraft(IDENTITY_VIEW)}>รีเซ็ต</button>
+                <button className="btn btn-primary btn-sm" disabled={!viewDirty} onClick={saveView}>{viewDirty ? 'บันทึกมุมภาพ' : 'บันทึกแล้ว'}</button>
+              </div>
+            )}
             <div className="camera-frame">
               <div className="camera-mock" style={{ display: cameraLiveState === 'live' ? 'none' : 'grid' }}>{cameraMock}</div>
               {selectedCameraId && (
-                <img
-                  className="camera-img"
-                  style={{ display: cameraLiveState === 'live' ? 'block' : 'none' }}
-                  src={streamUrl}
-                  onLoad={() => setCameraLiveState('live')}
-                  onError={() => setCameraLiveState('error')}
-                  alt=""
-                />
+                <CameraStage
+                  view={viewDraft}
+                  natural={natural}
+                  image={(imgStyle) => {
+                    const show = cameraLiveState === 'live';
+                    const onSize = (e) => {
+                      const w = e.target.naturalWidth, h = e.target.naturalHeight;
+                      if (w && h) setNatural((n) => (n && n.w === w && n.h === h ? n : { w, h }));
+                    };
+                    if (!isFtpCamera) {
+                      return <img style={{ ...imgStyle, display: show ? imgStyle.display : 'none' }} src={streamUrl} onLoad={(e) => { setCameraLiveState('live'); onSize(e); }} onError={() => setCameraLiveState('error')} alt="" />;
+                    }
+                    return ftpFrameUrl ? <img style={{ ...imgStyle, display: show ? imgStyle.display : 'none' }} src={ftpFrameUrl} onLoad={onSize} alt="" /> : null;
+                  }}
+                >
+                  <RoiCanvas points={roiPoints} onAddPoint={(nx, ny) => setRoiPoints((pts) => [...pts, [nx, ny]])} />
+                  <BBoxCanvas lastDetection={task.lastDetection} />
+                </CameraStage>
               )}
               <div className="camera-overlay"><span className="badge badge-live">AI CAMERA</span><span className="badge badge-finished">Click เพื่อวาด ROI</span></div>
-              <RoiCanvas points={roiPoints} onAddPoint={(nx, ny) => setRoiPoints((pts) => [...pts, [nx, ny]])} />
-              <BBoxCanvas lastDetection={task.lastDetection} />
+              {task.imageLost && task.status === 'running' && (
+                <div className="camera-loss" role="alert">
+                  <div>
+                    <strong>Loss data</strong>
+                    ไม่ได้รับภาพจากกล้องนานเกินกำหนด
+                    <small>ภาพล่าสุด {task.lastImageAt ? new Date(task.lastImageAt).toLocaleTimeString('th-TH', { hour12: false }) : 'ยังไม่เคยได้รับ'}</small>
+                    <small>ระบบยังคงรอภาพและจะกลับมาทำงานเองเมื่อได้รับภาพอีกครั้ง</small>
+                  </div>
+                </div>
+              )}
             </div>
             <p className="cell-muted" style={{ fontSize: 12, marginTop: 8 }}>
               ระบบตรวจจับต่อเนื่องอัตโนมัติ (realtime) ทันทีที่ Task อยู่สถานะ "กำลังดำเนินการ" มีกล้อง และวาด ROI แล้ว — ไม่ต้องกดปุ่มตรวจจับเอง<br />
@@ -316,6 +382,11 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
               <div className="form-group"><label>เริ่มพัก</label><input type="time" className="input" value={schedule.breakStart} onChange={(e) => setSchedule({ ...schedule, breakStart: e.target.value })} /></div>
               <div className="form-group"><label>จบพัก</label><input type="time" className="input" value={schedule.breakEnd} onChange={(e) => setSchedule({ ...schedule, breakEnd: e.target.value })} /></div>
             </div>
+            <p className="cell-muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+              ระบบ <strong>เริ่ม / พัก / เลิกงานอัตโนมัติ</strong> ตามเวลานี้ (เวลาไทย): เริ่มงานและจบพัก = กำลังดำเนินการ, เริ่มพักและเลิกงาน = พัก
+              {task.autoPhase ? ` — ตอนนี้อยู่ช่วง "${{ work: 'ทำงาน', break: 'พัก', off: 'นอกเวลางาน' }[task.autoPhase]}"` : ''}.
+              กดพัก/เริ่มเองได้ ระบบจะสลับให้ใหม่เมื่อถึงเวลาถัดไป. สถานะ "เสร็จสิ้น" ต้องกดเองเท่านั้น. เว้นว่างไว้ = ไม่สลับอัตโนมัติ
+            </p>
             <div className="divider" />
             <div className="form-grid">
               <div className="form-group">
@@ -366,25 +437,40 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
         <p className="cell-muted" style={{ fontSize: 12, padding: '0 20px 16px' }}>บันทึก snapshot อัตโนมัติทุก 1 นาที ขณะ Task อยู่สถานะ "กำลังดำเนินการ" — persist ลง <code>taskHistory.json</code></p>
       </div>
 
-      {task.status === 'finished' && (
-        <div id="tdTimelapseCard" className="card" style={{ marginTop: 18 }}>
-          <div className="card-head">
-            <h3>Time-lapse — งานนี้เสร็จแล้ว</h3>
-            <div className="action-row">
-              <button className="btn btn-secondary btn-sm" onClick={rebuildTimelapse}>สร้างใหม่</button>
-              <a className="btn btn-primary btn-sm" href={api.timelapseDownloadUrl(task.id)}>ดาวน์โหลดวิดีโอ</a>
-            </div>
-          </div>
-          <div className="card-body">
-            <div className="camera-frame" style={{ height: 260 }}>
-              <img ref={tdTimelapseImgRef} className="camera-img" style={{ display: task.timelapseStatus === 'ready' ? 'block' : 'none' }} alt="" />
-              {task.timelapseStatus !== 'ready' && (
-                <div className="camera-mock"><div>{task.timelapseStatus === 'failed' ? 'สร้างวิดีโอไม่สำเร็จ — ลองกด "สร้างใหม่"' : 'กำลังสร้างวิดีโอ...'}</div></div>
-              )}
-            </div>
+      <div id="tdTimelapseCard" className="card" style={{ marginTop: 18 }}>
+        <div className="card-head">
+          <h3>Time-lapse{task.status === 'finished' ? ' — งานนี้เสร็จแล้ว' : ''}</h3>
+          <div className="action-row">
+            <button className="btn btn-secondary btn-sm" disabled={task.timelapseStatus === 'building'} onClick={rebuildTimelapse}>
+              {task.timelapseStatus === 'building' ? 'กำลังสร้าง...' : task.timelapseStatus ? 'สร้างใหม่' : 'สร้างไทม์แลปส์'}
+            </button>
+            {task.timelapseStatus === 'ready' && (
+              <>
+                <a className="btn btn-primary btn-sm" href={api.timelapseUrl(task.id, { format: 'mp4' })}>ดาวน์โหลด MP4</a>
+                <a className="btn btn-primary btn-sm" href={api.timelapseUrl(task.id, { format: 'gif' })}>ดาวน์โหลด GIF</a>
+              </>
+            )}
           </div>
         </div>
-      )}
+        <div className="card-body">
+          {task.timelapseStatus === 'ready' ? (
+            <div>
+              <video key={timelapseVersion} className="tl-video" controls loop muted playsInline preload="metadata"
+                src={api.timelapseUrl(task.id, { format: 'mp4', inline: true, v: timelapseVersion })}
+                onError={() => setTimelapseError(true)} onLoadedData={() => setTimelapseError(false)} />
+              {timelapseError && <p className="cell-muted" style={{ fontSize: 12, marginTop: 8, color: 'var(--danger)' }}>เล่นวิดีโอไม่ได้ — ไฟล์อาจหายหรือเสีย กด "สร้างใหม่"</p>}
+            </div>
+          ) : (
+            <div className="camera-frame" style={{ height: 200 }}>
+              <div className="camera-mock"><div>
+                {task.timelapseStatus === 'failed' ? 'สร้างไทม์แลปส์ไม่สำเร็จ — ดูสาเหตุในหน้า Logs แล้วกด "สร้างใหม่"'
+                  : task.timelapseStatus === 'building' ? 'กำลังสร้างวิดีโอและ GIF...'
+                  : 'ยังไม่ได้สร้างไทม์แลปส์ — กด "สร้างไทม์แลปส์" (ต่อจากภาพ snapshot ที่บันทึกทุก 1 นาที)'}
+              </div></div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

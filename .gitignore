@@ -8,3 +8,10 @@ client/node_modules/
 snapshots/
 ftp-uploads/
 backups/
+
+# Real device credentials (WiFi/camera/FTP passwords) — see config.example.h
+esp32-cam-bridge/config.h
+
+# Login accounts + passwords for scripts/seed-users.js — never commit
+seed-users.local.json
+.env

@@ -4,7 +4,10 @@
   "description": "CIVIL — AI Brick Construction Monitoring (RTSP + YOLOv11 detection + ROI area calc)",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "migrate": "node migrations.js",
+    "seed-users": "node scripts/seed-users.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

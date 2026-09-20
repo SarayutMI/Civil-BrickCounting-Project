@@ -4,6 +4,18 @@
    without changing server.js too.
 =================================================================== */
 
+// Any 401 from the API means the server-side session ended — tell App to show the login page.
+// (login itself legitimately returns 401 for a wrong password, so it is excluded.)
+const rawFetch = window.fetch.bind(window);
+window.fetch = async (input, init) => {
+  const res = await rawFetch(input, init);
+  const url = typeof input === 'string' ? input : input.url;
+  if (res.status === 401 && url.startsWith('/api/') && url !== '/api/login' && url !== '/api/me') {
+    window.dispatchEvent(new Event('civil:unauthorized'));
+  }
+  return res;
+};
+
 async function asJson(res) {
   try { return await res.json(); } catch (_) { return {}; }
 }
@@ -17,6 +29,23 @@ export async function login(username, password) {
   });
   const data = await asJson(res);
   return { ok: res.ok, data };
+}
+
+export async function me() {
+  try {
+    const res = await fetch('/api/me');
+    if (!res.ok) return null;
+    return (await res.json()).user || null;
+  } catch (_) {
+    return null;
+  }
+}
+export async function logout() {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* session cookie expires on its own */ }
+}
+export async function getLogs(limit = 500) {
+  const res = await fetch(`/api/logs?limit=${limit}`);
+  return res.ok ? res.json() : [];
 }
 
 /* ---------------- TASKS ---------------- */
@@ -62,8 +91,12 @@ export async function getTaskHistory(id, { from, to, limit } = {}) {
   if (!res.ok) return [];
   return res.json();
 }
-export function timelapseDownloadUrl(id) {
-  return `/api/tasks/${id}/timelapse`;
+// format: 'mp4' | 'gif'. inline=true -> playable in <video>/<img>; otherwise the server sends it as a download.
+export function timelapseUrl(id, { format = 'mp4', inline = false, v } = {}) {
+  const qs = new URLSearchParams({ format });
+  if (inline) qs.set('inline', '1');
+  if (v) qs.set('v', v);
+  return `/api/tasks/${id}/timelapse?${qs}`;
 }
 export async function buildTimelapse(id) {
   const res = await fetch(`/api/tasks/${id}/timelapse/build`, { method: 'POST' });
@@ -121,7 +154,7 @@ export async function deleteWorker(id) {
 /* ---------------- USERS ---------------- */
 export async function getUsers() {
   const res = await fetch('/api/users');
-  return res.json();
+  return res.ok ? res.json() : [];
 }
 export async function createUser(body) {
   const res = await fetch('/api/users', {
@@ -193,6 +226,15 @@ export async function testRtsp(url, timeoutMs = 8000) {
     body: JSON.stringify({ url, timeoutMs }),
   });
   return asJson(res);
+}
+export async function saveCameraView(id, view) {
+  const res = await fetch(`/api/cameras/${id}/view`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(view),
+  });
+  const data = await asJson(res);
+  return { ok: res.ok, data };
 }
 export function cameraSnapshotUrl(id) {
   return `/api/cameras/${id}/snapshot?_=${Date.now()}`;
