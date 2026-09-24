@@ -26,7 +26,7 @@ seed script updates an existing username instead of duplicating it.
 | `DATABASE_URL` / `PG*` | localhost / `civil` / `civil_app` | Postgres connection |
 | `YOLO_SERVICE_URL` | `http://127.0.0.1:8000` | Python detection service |
 | `APP_TIMEZONE` | `Asia/Bangkok` | Timezone for the working-hours schedule |
-| `NO_IMAGE_SECONDS` | 15 | "Loss data" fires when no image arrives for `snapshotInterval + this` seconds |
+| `NO_IMAGE_SECONDS` | 600 | "Loss data" fires when no image arrives for this many seconds (or `snapshotInterval + 15` if that is longer) |
 | `TIMELAPSE_FPS` | 10 | Frame rate of generated MP4 time-lapse |
 | `BACKUP_KEEP` | 14 | Daily `pg_dump` files kept in `backups/` |
 

@@ -1178,12 +1178,13 @@ async function scheduleTick() {
 }
 
 /* =========================================================
-   LOSS DATA WATCHER — Task ที่กำลังทำงานแต่ไม่มีภาพเข้ามาเกิน (snapshotInterval + NO_IMAGE_SECONDS)
+   LOSS DATA WATCHER — Task ที่กำลังทำงานแต่ไม่มีภาพเข้ามาเกิน NO_IMAGE_SECONDS (ค่าเริ่มต้น 10 นาที)
+   ถ้า snapshotInterval ยาวกว่านั้น จะรอ snapshotInterval + 15 วินาทีแทน (กันขึ้น Loss ระหว่างรอรอบถัดไปตามปกติ)
    -> ขึ้นสถานะ "Loss data" (หน้าจอแสดงผ่าน task.imageLost) + แจ้งเตือน แล้วรอเช็คต่อเรื่อย ๆ
    ภาพกลับมาเมื่อไหร่ (lastImageAt ใหม่) สถานะกลับเป็นปกติเอง — ตัวเช็คนี้อ่านอย่างเดียว
    ไม่ยุ่งกับช่องทางรับภาพ (FTP / RTSP) ใช้แค่ t.lastImageAt ที่ pipeline ตรวจจับบันทึกไว้
 ========================================================= */
-const NO_IMAGE_SECONDS = Number(process.env.NO_IMAGE_SECONDS) || 15;
+const NO_IMAGE_SECONDS = Number(process.env.NO_IMAGE_SECONDS) || 600;
 const lostImageTasks = new Set(); // taskId ที่อยู่ในสถานะ Loss data
 const runningSince = new Map(); // taskId -> epoch ms ที่เห็นว่าเริ่ม running (กัน false alarm ตอนเพิ่งกดเริ่ม/หลัง restart)
 async function sendDiscordAlert(text) {
@@ -1207,7 +1208,7 @@ async function imageWatchTick() {
     if (!runningSince.has(t.id)) runningSince.set(t.id, now);
     const lastMs = t.lastImageAt ? new Date(t.lastImageAt).getTime() : 0;
     const ageMs = now - Math.max(lastMs, runningSince.get(t.id));
-    const limitMs = ((Number(t.snapshotInterval) || 30) + NO_IMAGE_SECONDS) * 1000;
+    const limitMs = Math.max(NO_IMAGE_SECONDS, (Number(t.snapshotInterval) || 30) + 15) * 1000;
     const lost = ageMs > limitMs;
     if (lost && !lostImageTasks.has(t.id)) {
       lostImageTasks.add(t.id);
