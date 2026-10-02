@@ -3,13 +3,16 @@ import Icon from '../icons/Icon.jsx';
 import StatCard from '../components/StatCard.jsx';
 import BarChart from '../components/charts/BarChart.jsx';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart.jsx';
-import TaskTimeline from '../components/TaskTimeline.jsx';
+import ProductivityReport from '../components/ProductivityReport.jsx';
+import ReportTaskList from './reports/ReportTaskList.jsx';
+import ReportTaskDetail from './reports/ReportTaskDetail.jsx';
+import ExportButtons from './reports/ExportButtons.jsx';
 import { workerName, statusLabel, StatusBadge, downloadBlob } from '../utils.jsx';
 import { useToast } from '../components/Toast.jsx';
 import * as api from '../api.js';
 
-const LABELS = { timeline: 'Timeline รายนาที', daily: 'รายวัน', weekly: 'รายสัปดาห์', monthly: 'รายเดือน', byTask: 'ตามงาน', byWorker: 'ตามแรงงาน' };
-const TABS = [['timeline', 'Timeline'], ['daily', 'รายวัน'], ['weekly', 'รายสัปดาห์'], ['monthly', 'รายเดือน'], ['byTask', 'ตามงาน'], ['byWorker', 'ตามแรงงาน']];
+const LABELS = { productivity: 'Productivity แรงงาน', daily: 'รายวัน', weekly: 'รายสัปดาห์', monthly: 'รายเดือน', byTask: 'ตามงาน', byWorker: 'ตามแรงงาน' };
+const TABS = [['productivity', 'Productivity'], ['daily', 'รายวัน'], ['weekly', 'รายสัปดาห์'], ['monthly', 'รายเดือน'], ['byTask', 'ตามงาน'], ['byWorker', 'ตามแรงงาน']];
 
 function periodRangeForTab(tab) {
   const now = new Date();
@@ -25,10 +28,23 @@ function periodRangeForTab(tab) {
    drives the visible table (rather than scraping the DOM like the
    original did) — the exported content is identical to what's on screen.
 =================================================================== */
-export default function Reports({ tasks, workersMaster }) {
+export default function Reports({ tasks, workersMaster, brickTypes, mergeTask, currentUser }) {
   const toast = useToast();
-  const [tab, setTab] = useState('timeline');
+  const [view, setView] = useState('tasks'); // 'tasks' = one row per task (landing) | 'project' = whole-project tabs
+  const [openTaskId, setOpenTaskId] = useState(null); // task whose own report is open
+  const [tab, setTab] = useState('productivity');
   const [timeSeries, setTimeSeries] = useState(null); // {labels, values} | null while loading
+  const [prodReport, setProdReport] = useState(null); // GET /api/reports/productivity, null while loading
+
+  // productivity feeds the task list and the project "Productivity" tab; refetched when tasks change
+  const needProd = !openTaskId && (view === 'tasks' || tab === 'productivity');
+  const taskKey = tasks.map((t) => `${t.id}:${t.area}:${t.status}:${t.workers.length}`).join('|');
+  useEffect(() => {
+    if (!needProd) return undefined;
+    let cancelled = false;
+    api.getProductivityReport().then((r) => { if (!cancelled) setProdReport(r || { tasks: [], project: {} }); });
+    return () => { cancelled = true; };
+  }, [needProd, taskKey]);
 
   const totalBlocks = tasks.reduce((s, t) => s + (t.blocks || 0), 0);
   const totalArea = tasks.reduce((s, t) => s + (t.area || 0), 0);
@@ -61,7 +77,7 @@ export default function Reports({ tasks, workersMaster }) {
   }), [tasks, workersMaster]);
 
   useEffect(() => {
-    if (tab !== 'daily' && tab !== 'weekly' && tab !== 'monthly') { setTimeSeries(null); return undefined; }
+    if (view !== 'project' || (tab !== 'daily' && tab !== 'weekly' && tab !== 'monthly')) { setTimeSeries(null); return undefined; }
     let cancelled = false;
     setTimeSeries(null);
     (async () => {
@@ -95,13 +111,20 @@ export default function Reports({ tasks, workersMaster }) {
       setTimeSeries({ labels: buckets.map((b) => b.label), values: totals });
     })();
     return () => { cancelled = true; };
-  }, [tab, tasks]);
+  }, [view, tab, tasks]);
 
   const activeTable = tab === 'byWorker'
     ? { title: 'รายละเอียดตามแรงงาน', headers: workerHeaders, rows: workerRows.map((r) => [r.worker.name, r.worker.role, String(r.tasks.length), r.tasks.map((t) => t.name).join(', ') || '—', r.totalArea.toFixed(1) + ' m²', r.totalBlocks.toLocaleString()]) }
     : { title: 'รายละเอียดตามงาน', headers: byTaskHeaders, rows: byTaskRows.map((r) => r.cells) };
 
   function currentReportRows() {
+    if (tab === 'productivity' && prodReport) {
+      const n = (v, d = 2) => (v === null || v === undefined ? '' : Number(v).toFixed(d));
+      return {
+        headers: ['งาน', 'ประเภทอิฐ', 'Q (ตร.ม.)', 'N (คน)', 'T (วัน)', 'นาทีทำงานจริง', 'นาทีทำงานต่อวัน', 'P จริง (ตร.ม./คน-วัน)', 'P มาตรฐาน', '% ความแตกต่าง', 'Duration มาตรฐาน (วัน)', 'Duration คาดการณ์ (วัน)', 'คงเหลือ (วัน)'],
+        rows: prodReport.tasks.map((r) => [r.name, r.brickType || '', n(r.Q), r.N, n(r.T, 3), r.runMinutes, r.dayMinutes, n(r.pActual, 3), n(r.pStd, 3), n(r.diffPct, 1), n(r.durationStd), n(r.durationForecast), n(r.remainingDays)]),
+      };
+    }
     return { headers: activeTable.headers, rows: activeTable.rows };
   }
   function exportCSV() {
@@ -116,11 +139,6 @@ export default function Reports({ tasks, workersMaster }) {
     downloadBlob(html, `civil-report-${tab}.xls`, 'application/vnd.ms-excel');
     toast('ดาวน์โหลดไฟล์ Excel แล้ว', 'success');
   }
-  function exportPDF() {
-    toast('กำลังเปิดหน้าต่างพิมพ์ / บันทึกเป็น PDF...');
-    setTimeout(() => window.print(), 400);
-  }
-
   let chartTitle, chartHint, chart;
   if (tab === 'byWorker') {
     chartTitle = 'บล็อกรวมต่อแรงงาน';
@@ -138,6 +156,15 @@ export default function Reports({ tasks, workersMaster }) {
       : <div className="cell-muted" style={{ padding: 40, textAlign: 'center' }}>กำลังโหลดข้อมูล...</div>;
   }
 
+  const openTask = openTaskId ? tasks.find((t) => t.id === openTaskId) : null;
+  if (openTask) {
+    return (
+      <section id="view-reports" className="view active">
+        <ReportTaskDetail task={openTask} tasks={tasks} workersMaster={workersMaster} brickTypes={brickTypes} mergeTask={mergeTask} currentUser={currentUser} onBack={() => setOpenTaskId(null)} />
+      </section>
+    );
+  }
+
   return (
     <section id="view-reports" className="view active">
       <div id="reportPrintHeader" className="print-only">
@@ -146,18 +173,23 @@ export default function Reports({ tasks, workersMaster }) {
       </div>
 
       <div className="section-head">
-        <div><h2>Reports</h2><p id="reportPeriodLabel">{LABELS[tab]}</p></div>
+        <div><h2>Reports</h2><p id="reportPeriodLabel">{view === 'tasks' ? 'รายงานแยกตามงาน' : `ภาพรวมโครงการ · ${LABELS[tab]}`}</p></div>
         <div className="toolbar">
-          <div id="reportTabs" className="tabs">
-            {TABS.map(([key, label]) => (
-              <button key={key} className={`tab-btn${tab === key ? ' active' : ''}`} onClick={() => setTab(key)}>{label}</button>
-            ))}
+          <div className="tabs">
+            <button className={`tab-btn${view === 'tasks' ? ' active' : ''}`} onClick={() => setView('tasks')}>แยกตามงาน</button>
+            <button className={`tab-btn${view === 'project' ? ' active' : ''}`} onClick={() => setView('project')}>ภาพรวมโครงการ</button>
           </div>
-          <button className="btn btn-secondary" onClick={exportCSV}>CSV</button>
-          <button className="btn btn-secondary" onClick={exportExcel}>Excel</button>
-          <button className="btn btn-primary" onClick={exportPDF}>PDF</button>
+          {view === 'project' && <button className="btn btn-secondary" onClick={exportExcel}>Excel</button>}
+          <ExportButtons tasks={tasks} workersMaster={workersMaster} currentUser={currentUser} fileBase="civil-report" onCsv={view === 'project' ? exportCSV : undefined} />
         </div>
       </div>
+      {view === 'project' && (
+        <div id="reportTabs" className="tabs" style={{ marginBottom: 16, width: 'fit-content' }}>
+          {TABS.map(([key, label]) => (
+            <button key={key} className={`tab-btn${tab === key ? ' active' : ''}`} onClick={() => setTab(key)}>{label}</button>
+          ))}
+        </div>
+      )}
 
       <div id="reportStats" className="grid-stats">
         <StatCard icon={<Icon name="task" />} label="จำนวน Task" value={tasks.length} />
@@ -168,9 +200,10 @@ export default function Reports({ tasks, workersMaster }) {
         <StatCard icon={<Icon name="users" />} label="แรงงานที่มอบหมาย" value={totalWorkersAssigned + ' คน'} />
       </div>
 
-      {tab === 'timeline' && <TaskTimeline tasks={tasks} />}
+      {view === 'tasks' && <ReportTaskList tasks={tasks} prod={prodReport} onOpen={setOpenTaskId} />}
+      {view === 'project' && tab === 'productivity' && <ProductivityReport report={prodReport} workerNamesOf={(r) => (r.workers || []).map((w) => workerName(workersMaster, w))} />}
 
-      {tab !== 'timeline' && (<>
+      {view === 'project' && tab !== 'productivity' && (<>
       <div className="card" style={{ marginBottom: 18 }}>
         <div className="card-head"><h3 id="reportChartTitle">{chartTitle}</h3><span id="reportChartHint" className="cell-muted" style={{ fontSize: 12 }}>{chartHint}</span></div>
         <div className="card-body"><div id="reportChart" className="chart">{chart}</div></div>

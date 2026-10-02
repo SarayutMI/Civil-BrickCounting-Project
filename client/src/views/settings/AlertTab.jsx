@@ -4,7 +4,7 @@ import * as api from '../../api.js';
 
 export default function AlertTab() {
   const toast = useToast();
-  const [cfg, setCfg] = useState({ webhook: '', cameraOffline: true, serverOffline: true, aiStopped: true, internetDown: false, noImage: true });
+  const [cfg, setCfg] = useState({ webhook: '', cameraOffline: true, serverOffline: true, aiStopped: true, internetDown: false, noImage: true, chipHot: true });
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -18,6 +18,7 @@ export default function AlertTab() {
           aiStopped: !!data.aiStopped,
           internetDown: !!data.internetDown,
           noImage: !!data.noImage,
+          chipHot: data.chipHot !== false,
         });
       } catch (err) {
         console.error('โหลด Alert Config ไม่สำเร็จ', err);
@@ -52,7 +53,8 @@ export default function AlertTab() {
           <label><input type="checkbox" checked={cfg.serverOffline} onChange={(e) => setCfg({ ...cfg, serverOffline: e.target.checked })} /> แจ้งเตือน Server Offline</label><br />
           <label><input type="checkbox" checked={cfg.aiStopped} onChange={(e) => setCfg({ ...cfg, aiStopped: e.target.checked })} /> แจ้งเตือน AI หยุดทำงาน</label><br />
           <label><input type="checkbox" checked={cfg.internetDown} onChange={(e) => setCfg({ ...cfg, internetDown: e.target.checked })} /> แจ้งเตือน Internet Down</label><br />
-          <label><input type="checkbox" checked={cfg.noImage} onChange={(e) => setCfg({ ...cfg, noImage: e.target.checked })} /> แจ้งเตือนเมื่อไม่พบภาพ</label>
+          <label><input type="checkbox" checked={cfg.noImage} onChange={(e) => setCfg({ ...cfg, noImage: e.target.checked })} /> แจ้งเตือนเมื่อไม่พบภาพ</label><br />
+          <label><input type="checkbox" checked={cfg.chipHot} onChange={(e) => setCfg({ ...cfg, chipHot: e.target.checked })} /> แจ้งเตือนชิป ESP32 ร้อนเกิน 75°C</label>
           <div className="divider" />
           <div className="action-row">
             <button className="btn btn-secondary" onClick={saveAlertConfig}>บันทึกการตั้งค่า</button>

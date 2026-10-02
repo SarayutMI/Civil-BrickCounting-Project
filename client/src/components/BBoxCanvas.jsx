@@ -13,9 +13,9 @@ import { useEffect, useRef } from 'react';
               promising dashed-outside — this port implements what the
               hint text documents, since the data to do so is present).
 =================================================================== */
-const BBOX_COLOR_DETECTED = '#16A34A';
-const BBOX_COLOR_COUNTED = '#0071E3';
-const BBOX_COLOR_PERSON = '#F97316';
+export const BBOX_COLOR_DETECTED = '#16A34A';
+export const BBOX_COLOR_COUNTED = '#0071E3';
+export const BBOX_COLOR_PERSON = '#F97316';
 
 export default function BBoxCanvas({ lastDetection }) {
   const canvasRef = useRef(null);

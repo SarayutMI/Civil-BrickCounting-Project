@@ -33,7 +33,11 @@ const { pool } = require('./db');
 const { runMigrations } = require('./migrations');
 const { createAuth } = require('./auth');
 const schedule = require('./schedule');
+const productivity = require('./productivity');
 const imageView = require('./imageView');
+const deviceMonitor = require('./deviceMonitor');
+const humanLabels = require('./humanLabels');
+const os = require('os');
 const { buildTimelapse, FRAME_RE } = require('./timelapse');
 
 const app = express();
@@ -172,6 +176,19 @@ let tasks = [];
 function findTask(id) {
   return tasks.find((t) => t.id === id);
 }
+// Latest AI area of a task = its latest AI brick count × area per brick of its brick type. Called when the
+// area per brick changes (brick size / brick type edited) so Q does not wait for the next detection —
+// finished tasks never detect again. History rows keep the area recorded at the time.
+async function syncTaskAreas(pred) {
+  for (const t of tasks.filter(pred)) {
+    const bt = findBrickType(t.brickType);
+    if (!bt) continue;
+    const area = Math.round((Number(t.blocks) || 0) * bt.blocksPerSqm * 1000) / 1000;
+    if (area === Number(t.area)) continue;
+    t.area = area;
+    await upsertTaskRow(t).catch((err) => console.error(`[task] area sync failed for ${t.id}:`, err.message));
+  }
+}
 
 /* =========================================================
    PERSISTENCE — task_history (table: task_history)
@@ -193,13 +210,18 @@ const lastFtpSnapshotByCamera = new Map(); // cameraId -> Buffer (JPEG)
 
 async function insertTaskHistoryRow(taskId, entry) {
   await pool.query(
-    `INSERT INTO task_history (task_id, at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [taskId, entry.at, entry.blocks, entry.area, entry.peopleDetected, entry.workersAssigned, entry.snapshot, entry.status, entry.progressPct]
+    `INSERT INTO task_history (task_id, at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct, detections, image_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [taskId, entry.at, entry.blocks, entry.area, entry.peopleDetected, entry.workersAssigned, entry.snapshot, entry.status, entry.progressPct,
+      entry.detections ? JSON.stringify(entry.detections) : null, entry.imageAt || null]
   );
 }
-async function queryTaskHistory(taskId, { from, to, limit } = {}) {
-  const clauses = ['task_id = $1'];
+// withDetections: also return the AI boxes (a few KB per row) — only the Timeline viewer asks for them
+// corrected: { blocksPerSqm, expectedArea } = the task uses option 2 (human-corrected) — reviewed rows then
+// report the corrected blocks / area / people (the AI values stay in aiBlocks / aiArea / aiPeople)
+async function queryTaskHistory(taskId, { from, to, limit, withDetections, corrected } = {}) {
+  const cols = `at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct, image_at, corrected_blocks, corrected_people${withDetections ? ', detections' : ''}`;
+  const clauses = ['task_id = $1', 'excluded_at IS NULL']; // ภาพที่ผู้ใช้ตัดออกไม่นับในกราฟ/รายงาน
   const params = [taskId];
   if (from) { params.push(from); clauses.push(`at >= $${params.length}`); }
   if (to) { params.push(to); clauses.push(`at <= $${params.length}`); }
@@ -208,33 +230,52 @@ async function queryTaskHistory(taskId, { from, to, limit } = {}) {
   let rows;
   if (n > 0) {
     const res = await pool.query(
-      `SELECT at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct
+      `SELECT ${cols}
        FROM task_history ${where} ORDER BY at DESC LIMIT $${params.length + 1}`,
       [...params, n]
     );
     rows = res.rows.reverse(); // กลับเป็นลำดับเวลาเก่า->ใหม่ เหมือน list.slice(-n) ของเดิม
   } else {
     const res = await pool.query(
-      `SELECT at, blocks, area, people_detected, workers_assigned, snapshot, status, progress_pct
+      `SELECT ${cols}
        FROM task_history ${where} ORDER BY at ASC`,
       params
     );
     rows = res.rows;
   }
-  return rows.map((r) => ({
-    at: r.at.toISOString(), blocks: r.blocks, area: r.area,
-    peopleDetected: r.people_detected, workersAssigned: r.workers_assigned,
-    snapshot: r.snapshot || null, status: r.status || null, progressPct: r.progress_pct,
-  }));
+  return rows.map((r) => {
+    const e = {
+      at: r.at.toISOString(), blocks: r.blocks, area: r.area,
+      peopleDetected: r.people_detected, workersAssigned: r.workers_assigned,
+      snapshot: r.snapshot || null, status: r.status || null, progressPct: r.progress_pct,
+      imageAt: r.image_at ? r.image_at.toISOString() : null,
+      ...(withDetections ? { detections: r.detections || null } : {}),
+    };
+    if (!corrected || r.corrected_blocks === null || r.corrected_blocks === undefined) return e;
+    const area = Math.round(r.corrected_blocks * corrected.blocksPerSqm * 1000) / 1000;
+    return {
+      ...e, corrected: true, aiBlocks: r.blocks, aiArea: r.area, aiPeople: r.people_detected,
+      blocks: r.corrected_blocks, area, peopleDetected: r.corrected_people ?? r.people_detected,
+      progressPct: corrected.expectedArea ? Math.round((area / corrected.expectedArea) * 1000) / 10 : e.progressPct,
+    };
+  });
+}
+// history options for a task: corrected values when it uses option 2 and its brick type is known
+function historySource(t) {
+  const bt = t.resultSource === 'human' ? findBrickType(t.brickType) : null;
+  return bt ? { blocksPerSqm: bt.blocksPerSqm, expectedArea: Number(t.expectedArea) || 0 } : null;
 }
 
 async function appendTaskHistorySnapshot() {
   for (const t of tasks) {
-    if (t.status !== 'running') continue;
+    if (t.status !== 'running' || t.copyOf) continue; // งานสำเนาไม่รับภาพใหม่ — ไม่เติมประวัติ
     const at = new Date().toISOString();
     let snapshotUrl = null;
 
     const buf = lastSnapshotBuffers.get(t.id);
+    const labeled = lastFrameLabels.get(t.id);
+    // ภาพที่จะบันทึกยังไม่ได้ตรวจจับเสร็จ (เพิ่งเข้ามา / ตรวจจับล้ม) -> เก็บภาพไว้โดยไม่มีกรอบ ดีกว่าเก็บกรอบของภาพอื่น
+    const detections = buf && labeled && labeled.jpeg === buf ? labeled.label : null;
     if (buf) {
       const taskDir = path.join(SNAPSHOTS_DIR, t.id);
       if (!fs.existsSync(taskDir)) fs.mkdirSync(taskDir, { recursive: true });
@@ -257,6 +298,8 @@ async function appendTaskHistorySnapshot() {
         at, blocks: t.blocks, area: t.area, peopleDetected: t.peopleDetected || 0,
         workersAssigned: t.workers.length, snapshot: snapshotUrl,
         status: t.status, progressPct: t.expectedArea ? Math.round((t.area / t.expectedArea) * 1000) / 10 : 0,
+        detections: snapshotUrl ? detections : null,
+        imageAt: snapshotUrl ? t.lastImageAt || null : null, // เวลาที่ภาพนี้มาถึงจริง (ใช้คิดเวลาทำงานจาก timestamp ของภาพ)
       });
     } catch (err) {
       console.error(`[history] insert failed for task ${t.id}:`, err.message);
@@ -275,7 +318,11 @@ async function startTimelapseBuild(t, actor) {
   timelapseBuilding.add(t.id);
   t.timelapseStatus = 'building';
   await upsertTaskRow(t).catch((err) => console.error('[task] persist timelapseStatus failed:', err.message));
-  buildTimelapse(path.join(SNAPSHOTS_DIR, t.id))
+  // ภาพที่ผู้ใช้ตัดออกจากการนับไม่ใส่ในไทม์แลปส์
+  const skip = await pool.query('SELECT snapshot FROM task_history WHERE task_id = $1 AND excluded_at IS NOT NULL AND snapshot IS NOT NULL', [t.id])
+    .then((r) => new Set(r.rows.map((x) => path.basename(x.snapshot))))
+    .catch(() => new Set());
+  buildTimelapse(path.join(SNAPSHOTS_DIR, t.id), skip)
     .then((r) => {
       t.timelapseStatus = 'ready';
       audit('snapshot', 'info', `สร้างไทม์แลปส์ Task "${t.name}" สำเร็จ (${r.frames} ภาพ)`, actor);
@@ -293,20 +340,49 @@ async function startTimelapseBuild(t, actor) {
 
 /* =========================================================
    PERSISTENCE — brick_types (table: brick_types)
-   blocksPerSqm = อิฐ/บล็อกกี่ก้อน เท่ากับพื้นที่ 1 ตารางเมตร (ผู้ใช้กำหนดเองผ่าน UI)
+   blocksPerSqm = พื้นที่ (ตร.ม.) ต่ออิฐ/บล็อก 1 ก้อน — area = blocks × ค่านี้ (ผู้ใช้กำหนดเองผ่าน UI)
+   ชื่อ field/คอลัมน์ยังเป็น blocksPerSqm / blocks_per_sqm เพื่อไม่ต้อง migrate schema
 ========================================================= */
 function brickTypeRowToObj(row) {
-  return { id: row.id, name: row.name, blocksPerSqm: Number(row.blocks_per_sqm), classId: row.class_id };
+  return {
+    id: row.id, name: row.name, blocksPerSqm: Number(row.blocks_per_sqm), classId: row.class_id,
+    standardProductivity: row.standard_productivity === null || row.standard_productivity === undefined ? null : Number(row.standard_productivity),
+    // published standards are ranges (e.g. 8–12); standardProductivity = the middle, used in the formulas
+    standardProductivityMin: row.standard_productivity_min === null || row.standard_productivity_min === undefined ? null : Number(row.standard_productivity_min),
+    standardProductivityMax: row.standard_productivity_max === null || row.standard_productivity_max === undefined ? null : Number(row.standard_productivity_max),
+    // brick size (cm): when set, blocksPerSqm is computed from it (brickArea = length × height)
+    size: row.size_length_cm ? { lengthCm: Number(row.size_length_cm), heightCm: Number(row.size_height_cm),
+      thicknessCm: row.size_thickness_cm === null ? null : Number(row.size_thickness_cm) } : null,
+  };
+}
+const { brickArea } = productivity;
+// body.size = { lengthCm, heightCm, thicknessCm? } | null -> { size } | { error } | undefined (not sent)
+function parseBrickSize(v) {
+  if (v === undefined) return undefined;
+  if (v === null) return { size: null };
+  const n = (x) => (x === '' || x === null || x === undefined ? null : Number(x));
+  const size = { lengthCm: n(v.lengthCm), heightCm: n(v.heightCm), thicknessCm: n(v.thicknessCm) };
+  if (!(size.lengthCm > 0) || !(size.heightCm > 0)) return { error: 'ขนาดอิฐ: ความยาวและความสูงต้องมากกว่า 0 (ซม.)' };
+  if (size.thicknessCm !== null && !(size.thicknessCm > 0)) return { error: 'ขนาดอิฐ: ความหนาต้องมากกว่า 0 (ซม.)' };
+  return { size };
 }
 async function loadBrickTypesFromDB() {
   const { rows } = await pool.query('SELECT * FROM brick_types ORDER BY id');
-  return rows.map(brickTypeRowToObj);
+  // area per brick always follows the saved size (keeps it right if the formula changes)
+  return rows.map(brickTypeRowToObj).map((b) => (b.size ? { ...b, blocksPerSqm: productivity.brickArea(b.size) } : b));
 }
 async function upsertBrickTypeRow(b) {
   await pool.query(
-    `INSERT INTO brick_types (id, name, blocks_per_sqm, class_id) VALUES ($1,$2,$3,$4)
-     ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, blocks_per_sqm=EXCLUDED.blocks_per_sqm, class_id=EXCLUDED.class_id`,
-    [b.id, b.name, b.blocksPerSqm, b.classId === undefined || b.classId === null ? null : Number(b.classId)]
+    `INSERT INTO brick_types (id, name, blocks_per_sqm, class_id, standard_productivity, standard_productivity_min, standard_productivity_max,
+       size_length_cm, size_height_cm, size_thickness_cm)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, blocks_per_sqm=EXCLUDED.blocks_per_sqm, class_id=EXCLUDED.class_id,
+       standard_productivity=EXCLUDED.standard_productivity, standard_productivity_min=EXCLUDED.standard_productivity_min,
+       standard_productivity_max=EXCLUDED.standard_productivity_max, size_length_cm=EXCLUDED.size_length_cm,
+       size_height_cm=EXCLUDED.size_height_cm, size_thickness_cm=EXCLUDED.size_thickness_cm`,
+    [b.id, b.name, b.blocksPerSqm, b.classId === undefined || b.classId === null ? null : Number(b.classId),
+      b.standardProductivity ?? null, b.standardProductivityMin ?? null, b.standardProductivityMax ?? null,
+      b.size ? b.size.lengthCm : null, b.size ? b.size.heightCm : null, b.size ? b.size.thicknessCm : null]
   );
 }
 async function deleteBrickTypeRow(id) {
@@ -407,7 +483,7 @@ let workersMaster = [];
 function alertConfigRowToObj(row) {
   return {
     webhook: row.webhook, cameraOffline: row.camera_offline, serverOffline: row.server_offline,
-    aiStopped: row.ai_stopped, internetDown: row.internet_down, noImage: row.no_image,
+    aiStopped: row.ai_stopped, internetDown: row.internet_down, noImage: row.no_image, chipHot: row.chip_hot !== false,
   };
 }
 async function loadAlertConfigFromDB() {
@@ -417,12 +493,12 @@ async function loadAlertConfigFromDB() {
 }
 async function saveAlertConfigDB(cfg) {
   await pool.query(
-    `INSERT INTO alert_config (id, webhook, camera_offline, server_offline, ai_stopped, internet_down, no_image)
-     VALUES (1,$1,$2,$3,$4,$5,$6)
+    `INSERT INTO alert_config (id, webhook, camera_offline, server_offline, ai_stopped, internet_down, no_image, chip_hot)
+     VALUES (1,$1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (id) DO UPDATE SET webhook=EXCLUDED.webhook, camera_offline=EXCLUDED.camera_offline,
        server_offline=EXCLUDED.server_offline, ai_stopped=EXCLUDED.ai_stopped,
-       internet_down=EXCLUDED.internet_down, no_image=EXCLUDED.no_image`,
-    [cfg.webhook || '', !!cfg.cameraOffline, !!cfg.serverOffline, !!cfg.aiStopped, !!cfg.internetDown, !!cfg.noImage]
+       internet_down=EXCLUDED.internet_down, no_image=EXCLUDED.no_image, chip_hot=EXCLUDED.chip_hot`,
+    [cfg.webhook || '', !!cfg.cameraOffline, !!cfg.serverOffline, !!cfg.aiStopped, !!cfg.internetDown, !!cfg.noImage, cfg.chipHot !== false]
   );
 }
 let alertConfig = {};
@@ -530,7 +606,7 @@ app.put('/api/cameras/:id', async (req, res) => {
   }
 });
 
-// ตั้งค่ามุมภาพของกล้อง (หมุน/พลิก/ซูม) — ตั้งครั้งเดียวต่อกล้อง ใช้กับทุก Task ที่ผูกกล้องนี้
+// ตั้งค่ามุมภาพของกล้อง (หมุน/พลิก/perspective/straighten/ซูม) — ตั้งครั้งเดียวต่อกล้อง ใช้กับทุก Task ที่ผูกกล้องนี้
 app.put('/api/cameras/:id/view', async (req, res) => {
   const cam = findCamera(req.params.id);
   if (!cam) return res.status(404).json({ success: false, message: 'ไม่พบกล้องนี้' });
@@ -541,7 +617,7 @@ app.put('/api/cameras/:id/view', async (req, res) => {
   if (cam.view === undefined) delete cam.view;
   try {
     await upsertCameraRow(cam);
-    audit('camera', 'info', `ตั้งค่ามุมภาพกล้อง "${cam.name}" (หมุน ${view.rotate}°${view.flipH ? ', พลิกซ้าย-ขวา' : ''}${view.flipV ? ', พลิกบน-ล่าง' : ''}, ซูม ${view.zoom}×)`, req.user.username);
+    audit('camera', 'info', `ตั้งค่ามุมภาพกล้อง "${cam.name}" (หมุน ${view.rotate}°${view.flipH ? ', พลิกซ้าย-ขวา' : ''}${view.flipV ? ', พลิกบน-ล่าง' : ''}${view.straighten ? `, straighten ${view.straighten}°` : ''}${view.vertical ? `, vertical ${view.vertical}` : ''}${view.horizontal ? `, horizontal ${view.horizontal}` : ''}, ซูม ${view.zoom}×)`, req.user.username);
     res.json({ success: true, camera: cam });
   } catch (err) {
     if (before === undefined) delete cam.view; else cam.view = before;
@@ -623,8 +699,32 @@ app.put('/api/tasks/:id', async (req, res) => {
     'name', 'zone', 'brickType', 'status', 'workers', 'area', 'expectedArea',
     'blocks', 'cameraStatus', 'lastUpdate', 'confidence', 'snapshotInterval',
     'cameraId', 'schedule', 'roi', 'progressSeries',
+    'resultSource', // ผลลัพธ์ที่ใช้: 'ai' (ตัวเลือกที่ 1) | 'human' (ตัวเลือกที่ 2 — ผลตรวจแก้ Human-in-the-loop)
+    'pStdOverride', // P มาตรฐานเฉพาะงานนี้ (ตร.ม./คน-วัน) — null = ใช้ของประเภทอิฐ
+    'timeAdjustMinutes', // ปรับเวลาทำงาน ± นาที (เช่น กล้องขาดภาพช่วงที่ทำงานจริง) — แก้ย้อนหลังจากหน้า Report
   ];
+  if (body.resultSource !== undefined && !['ai', 'human'].includes(body.resultSource)) {
+    return res.status(400).json({ success: false, message: 'resultSource ต้องเป็น ai หรือ human' });
+  }
+  if (body.pStdOverride !== undefined && body.pStdOverride !== null && !(Number(body.pStdOverride) > 0)) {
+    return res.status(400).json({ success: false, message: 'P มาตรฐานของงานต้องเป็นตัวเลขมากกว่า 0 หรือเว้นว่าง' });
+  }
+  if (body.timeAdjustMinutes !== undefined && !(Number.isFinite(Number(body.timeAdjustMinutes)) && Math.abs(Number(body.timeAdjustMinutes)) <= 100000)) {
+    return res.status(400).json({ success: false, message: 'การปรับเวลาทำงานต้องเป็นตัวเลข (นาที)' });
+  }
+  if (body.workers !== undefined && !(Array.isArray(body.workers) && body.workers.every((w) => typeof w === 'string'))) {
+    return res.status(400).json({ success: false, message: 'รายชื่อแรงงานไม่ถูกต้อง' });
+  }
+  if (body.pStdOverride !== undefined) body.pStdOverride = body.pStdOverride === null ? null : Number(body.pStdOverride);
+  if (body.timeAdjustMinutes !== undefined) body.timeAdjustMinutes = Math.round(Number(body.timeAdjustMinutes) * 10) / 10;
+  if (t.copyOf && body.cameraId) {
+    return res.status(400).json({ success: false, message: 'งานสำเนา (Duplicate) ผูกกล้องไม่ได้ — ภาพใหม่จากหน้างานเข้าเฉพาะงานต้นฉบับ' });
+  }
+  const prevSource = t.resultSource || 'ai';
+  const PROD_INPUTS = { workers: 'แรงงาน', brickType: 'ประเภทอิฐ', expectedArea: 'เป้าหมายพื้นที่', schedule: 'ตารางเวลา', pStdOverride: 'P มาตรฐานของงาน', timeAdjustMinutes: 'ปรับเวลาทำงาน' };
+  const prodBefore = Object.fromEntries(Object.keys(PROD_INPUTS).map((k) => [k, JSON.stringify(t[k] ?? null)]));
   const wasFinished = t.status === 'finished';
+  const prevBrickType = t.brickType;
   editable.forEach((key) => {
     if (body[key] !== undefined) t[key] = body[key];
   });
@@ -632,6 +732,14 @@ app.put('/api/tasks/:id', async (req, res) => {
     await upsertTaskRow(t);
   } catch (err) {
     return res.status(500).json({ success: false, message: 'บันทึก Task ไม่สำเร็จ', raw: err.message });
+  }
+  if (t.brickType !== prevBrickType) await syncTaskAreas((x) => x.id === t.id); // area follows the new brick type
+  if (body.reason === 'report') { // แก้ข้อมูลที่ใช้คำนวณ Productivity ย้อนหลังจากหน้า Report
+    const changed = Object.keys(PROD_INPUTS).filter((k) => JSON.stringify(t[k] ?? null) !== prodBefore[k]).map((k) => PROD_INPUTS[k]);
+    if (changed.length) audit('edit', 'info', `แก้ข้อมูลคำนวณ Productivity ย้อนหลัง Task "${t.name}": ${changed.join(', ')}`, req.user.username);
+  }
+  if ((t.resultSource || 'ai') !== prevSource) {
+    audit('edit', 'info', `Task "${t.name}" เปลี่ยนผลลัพธ์ที่ใช้เป็น ${t.resultSource === 'human' ? 'ตัวเลือกที่ 2: ผลตรวจแก้โดยคน (HITL)' : 'ตัวเลือกที่ 1: ผล AI'}`, req.user.username);
   }
 
   // Task เพิ่งเปลี่ยนเป็น "เสร็จสิ้น" -> ต่อภาพ snapshot ทุกนาทีที่เก็บไว้เป็นไทม์แลปส์อัตโนมัติ (async ไม่บล็อก response)
@@ -649,6 +757,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
     await deleteTaskRow(req.params.id); // ลบ task_history ของ task นี้ทั้งหมดด้วย (ON DELETE CASCADE)
     tasks.splice(idx, 1);
     lastDetections.delete(req.params.id);
+    lastFrameLabels.delete(req.params.id);
     lastSnapshotBuffers.delete(req.params.id);
     lastDetectStartedAt.delete(req.params.id);
     fs.rmSync(path.join(SNAPSHOTS_DIR, req.params.id), { recursive: true, force: true });
@@ -656,6 +765,95 @@ app.delete('/api/tasks/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, message: 'ลบ Task ไม่สำเร็จ', raw: err.message });
   }
+});
+
+/* =========================================================
+   DUPLICATE / CLEAR DATA
+   Duplicate: สร้าง "งานสำเนา" สำหรับลองแก้/ลองปรับ — คัดลอกค่าตั้ง + ประวัติทั้งหมด (ภาพ, กรอบ AI, label ที่คนตรวจแก้)
+     ภาพ snapshot ใช้ hard link (ไม่กินพื้นที่เพิ่ม; ลบฝั่งไหนก็ไม่กระทบอีกฝั่ง)
+     งานสำเนาไม่ผูกกล้อง (cameraId = null) และไม่ถูก auto start/pause — ภาพใหม่จากหน้างานเข้าเฉพาะงานต้นฉบับ
+     ไม่นับรวมใน Productivity ทั้งโครงการ (กันนับซ้ำกับงานต้นฉบับ)
+   Clear Data: ลบประวัติ/ภาพ/label ของ Task นี้ แล้วรีเซ็ตตัวเลขเป็น 0 — ค่าตั้งของงานยังอยู่
+========================================================= */
+const HISTORY_COPY_COLS = 'at, blocks, area, people_detected, workers_assigned, status, progress_pct, detections, image_at, human_labels, corrected_blocks, corrected_people, excluded_at, excluded_by, excluded_reason';
+
+// hard link ทุกไฟล์ใน snapshots/<srcId> ไป snapshots/<dstId> (คนละ filesystem -> copy แทน)
+function linkSnapshotDir(srcId, dstId) {
+  const src = path.join(SNAPSHOTS_DIR, srcId);
+  if (!fs.existsSync(src)) return 0;
+  const dst = path.join(SNAPSHOTS_DIR, dstId);
+  fs.mkdirSync(dst, { recursive: true });
+  let n = 0;
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    if (!e.isFile()) continue;
+    try { fs.linkSync(path.join(src, e.name), path.join(dst, e.name)); } catch (_) { fs.copyFileSync(path.join(src, e.name), path.join(dst, e.name)); }
+    n++;
+  }
+  return n;
+}
+
+app.post('/api/tasks/:id/duplicate', async (req, res) => {
+  const src = findTask(req.params.id);
+  if (!src) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  const name = String((req.body && req.body.name) || `${src.name} (สำเนา)`).trim().slice(0, 200);
+  if (!name) return res.status(400).json({ success: false, message: 'กรุณากรอกชื่องาน' });
+  const copy = JSON.parse(JSON.stringify(src));
+  Object.assign(copy, {
+    id: crypto.randomUUID(), name,
+    status: src.status === 'running' ? 'pause' : src.status,
+    cameraId: null, cameraStatus: 'disconnect', lastUpdate: `คัดลอกจาก "${src.name}"`,
+    createdAt: new Date().toISOString(), copyOf: src.id, copyOfName: src.name,
+  });
+  delete copy.autoPhase;
+  delete copy.imageLost;
+  if (copy.timelapseStatus === 'building') delete copy.timelapseStatus;
+  let rows = 0;
+  try {
+    linkSnapshotDir(src.id, copy.id);
+    await upsertTaskRow(copy); // แถว tasks ต้องมีก่อน (FK ของ history) — คัดลอก history ล้มจะลบทิ้งด้านล่าง
+    const r = await pool.query(
+      `INSERT INTO task_history (task_id, snapshot, ${HISTORY_COPY_COLS})
+       SELECT $1, CASE WHEN snapshot IS NULL THEN NULL ELSE replace(snapshot, $3, $4) END, ${HISTORY_COPY_COLS}
+       FROM task_history WHERE task_id = $2 ORDER BY at`,
+      [copy.id, src.id, `/snapshots/${src.id}/`, `/snapshots/${copy.id}/`]
+    );
+    rows = r.rowCount;
+  } catch (err) {
+    await deleteTaskRow(copy.id).catch(() => {});
+    fs.rmSync(path.join(SNAPSHOTS_DIR, copy.id), { recursive: true, force: true });
+    return res.status(500).json({ success: false, message: 'คัดลอก Task ไม่สำเร็จ', raw: err.message });
+  }
+  tasks.push(copy);
+  audit('task', 'info', `คัดลอก Task "${src.name}" เป็น "${copy.name}" (ประวัติ ${rows} แถว)`, req.user.username);
+  res.status(201).json({ ...copy, historyRows: rows });
+});
+
+app.post('/api/tasks/:id/clear', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  if (String((req.body && req.body.confirmName) || '').trim() !== t.name.trim()) {
+    return res.status(400).json({ success: false, message: 'พิมพ์ชื่องานให้ตรงเพื่อยืนยันการล้างข้อมูล' });
+  }
+  if (t.status === 'running') return res.status(409).json({ success: false, message: 'หยุดงานก่อน แล้วค่อยล้างข้อมูล' });
+  const prev = { ...t };
+  Object.assign(t, { area: 0, blocks: 0, peopleDetected: 0, progressSeries: [], lastImageAt: null, lastUpdate: 'ล้างข้อมูลแล้ว', resultSource: 'ai' });
+  delete t.timelapseStatus;
+  let rows = 0;
+  try {
+    const r = await pool.query('DELETE FROM task_history WHERE task_id = $1', [t.id]);
+    rows = r.rowCount;
+    await upsertTaskRow(t);
+  } catch (err) {
+    Object.keys(t).forEach((k) => delete t[k]);
+    Object.assign(t, prev);
+    return res.status(500).json({ success: false, message: 'ล้างข้อมูลไม่สำเร็จ', raw: err.message });
+  }
+  lastDetections.delete(t.id);
+  lastFrameLabels.delete(t.id);
+  lastSnapshotBuffers.delete(t.id);
+  fs.rmSync(path.join(SNAPSHOTS_DIR, t.id), { recursive: true, force: true }); // hard link ของงานสำเนายังอยู่ครบ
+  audit('task', 'warn', `ล้างข้อมูล Task "${t.name}" (ประวัติ ${rows} แถว + ภาพทั้งหมด)`, req.user.username);
+  res.json({ ...t, clearedRows: rows });
 });
 
 /* =========================================================
@@ -686,17 +884,413 @@ app.get('/api/tasks/:id/timelapse', (req, res) => {
 
 /* =========================================================
    TASK HISTORY API — snapshot ตามช่วงเวลาของแต่ละ Task (blocks/area/จำนวนคนที่ตรวจพบ)
-   query: ?from=ISO8601&to=ISO8601&limit=N (limit นับจากรายการล่าสุดย้อนกลับไป)
+   query: ?from=ISO8601&to=ISO8601&limit=N (limit นับจากรายการล่าสุดย้อนกลับไป)&detections=1 (แนบกรอบ AI ของภาพแต่ละนาที)
 ========================================================= */
 app.get('/api/tasks/:id/history', async (req, res) => {
   const t = findTask(req.params.id);
   if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
-  const { from, to, limit } = req.query;
+  const { from, to, limit, detections } = req.query;
   try {
-    const list = await queryTaskHistory(t.id, { from, to, limit });
+    const list = await queryTaskHistory(t.id, { from, to, limit, withDetections: detections === '1', corrected: historySource(t) });
     res.json(list);
   } catch (err) {
     res.status(500).json({ success: false, message: 'ดึงประวัติ Task ไม่สำเร็จ', raw: err.message });
+  }
+});
+
+// วันที่ที่ Task นี้มีข้อมูล timeline (นับตามโซนเวลาของผู้ใช้ ?tz=Asia/Bangkok) — ใหม่สุดก่อน
+// ใช้ให้หน้า Reports เปิดมาที่วันที่มีข้อมูล และแสดงการ์ดเลือกวันที่
+app.get('/api/tasks/:id/history/days', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  const tz = String(req.query.tz || schedule.DEFAULT_TZ);
+  try {
+    const { rows } = await pool.query(
+      `SELECT to_char((at AT TIME ZONE $2)::date, 'YYYY-MM-DD') AS date, count(*)::int AS count,
+              min(at) AS first, max(at) AS last
+         FROM task_history WHERE task_id = $1 AND excluded_at IS NULL
+        GROUP BY 1 ORDER BY 1 DESC`,
+      [t.id, tz]
+    );
+    res.json(rows.map((r) => ({ date: r.date, count: r.count, first: r.first.toISOString(), last: r.last.toISOString() })));
+  } catch (err) {
+    const badTz = /time zone/i.test(err.message);
+    res.status(badTz ? 400 : 500).json({ success: false, message: badTz ? 'โซนเวลาไม่ถูกต้อง' : 'ดึงรายการวันที่ไม่สำเร็จ', raw: err.message });
+  }
+});
+
+/* =========================================================
+   PRODUCTIVITY REPORT — P = Q / (N × T), % ต่างจากมาตรฐาน, Duration ของทุก Task (สูตรใน productivity.js)
+   T มาจากเวลาทำงานจริงตาม timestamp ของภาพที่กล้องส่งมา (taskImageUsage) ÷ นาทีทำงานต่อวันตามตารางงาน
+========================================================= */
+// เวลาทำงานของแต่ละ Task จาก timestamp ของภาพที่กล้องส่งมา: รวมช่วงห่างระหว่างภาพที่ต่อเนื่องกัน
+// (ห่างไม่เกิน IMAGE_GAP_SEC — ห่างกว่านั้นถือว่าพัก/นอกเวลา/ขาดภาพ ไม่นับ). แถวเก่าที่ไม่มี image_at ใช้เวลาของแถวแทน
+const IMAGE_GAP_SEC = 150;
+async function taskImageUsage(tz, taskId = null) {
+  const { rows } = await pool.query(
+    `WITH img AS (
+       SELECT DISTINCT task_id, COALESCE(image_at, at) AS t
+         FROM task_history
+        WHERE snapshot IS NOT NULL AND excluded_at IS NULL AND (status IS NULL OR status = 'running') AND ($2::text IS NULL OR task_id = $2)
+     ), g AS (
+       SELECT task_id, t, t - lag(t) OVER (PARTITION BY task_id ORDER BY t) AS gap FROM img
+     )
+     SELECT task_id, count(*)::int AS images,
+            COALESCE(sum(extract(epoch FROM gap)) FILTER (WHERE gap <= make_interval(secs => $3)), 0)::float AS active_sec,
+            count(DISTINCT (t AT TIME ZONE $1)::date)::int AS active_days,
+            min(t) AS first_at, max(t) AS last_at
+       FROM g GROUP BY task_id`,
+    [tz, taskId, IMAGE_GAP_SEC]
+  );
+  const usage = new Map(rows.map((r) => [r.task_id, r]));
+  // continuous work periods (images no more than IMAGE_GAP_SEC apart) — shown as the working behind T
+  const seg = await pool.query(
+    `WITH img AS (
+       SELECT DISTINCT task_id, COALESCE(image_at, at) AS t
+         FROM task_history
+        WHERE snapshot IS NOT NULL AND excluded_at IS NULL AND (status IS NULL OR status = 'running') AND ($1::text IS NULL OR task_id = $1)
+     ), g AS (
+       SELECT task_id, t, CASE WHEN lag(t) OVER w IS NULL OR t - lag(t) OVER w > make_interval(secs => $2) THEN 1 ELSE 0 END AS brk
+         FROM img WINDOW w AS (PARTITION BY task_id ORDER BY t)
+     ), s AS (
+       SELECT task_id, t, sum(brk) OVER (PARTITION BY task_id ORDER BY t) AS seg FROM g
+     )
+     SELECT task_id, min(t) AS start_at, max(t) AS end_at, count(*)::int AS images
+       FROM s GROUP BY task_id, seg ORDER BY task_id, min(t)`,
+    [taskId, IMAGE_GAP_SEC]
+  );
+  for (const r of seg.rows) {
+    const u = usage.get(r.task_id);
+    if (!u) continue;
+    (u.segments = u.segments || []).push({
+      start: r.start_at.toISOString(), end: r.end_at.toISOString(), images: r.images,
+      minutes: Math.round(((r.end_at - r.start_at) / 60000) * 10) / 10,
+    });
+  }
+  return usage;
+}
+// ผลตรวจแก้ล่าสุดของแต่ละ Task (Human-in-the-loop) = "ตัวเลือกที่ 2" ของผลลัพธ์ — ภาพล่าสุดที่คนตรวจแก้แล้ว
+// ใช้แทนค่าของ AI เฉพาะเมื่อ Task เลือก resultSource = 'human' (ค่า AI ต้นฉบับไม่ถูกแก้ทับ สลับกลับได้ตลอด)
+async function finalCorrections(taskId = null) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (task_id) task_id, corrected_blocks, corrected_people, at
+       FROM task_history WHERE corrected_blocks IS NOT NULL AND excluded_at IS NULL AND ($1::text IS NULL OR task_id = $1)
+      ORDER BY task_id, at DESC`,
+    [taskId]
+  );
+  return new Map(rows.map((r) => [r.task_id, { blocks: r.corrected_blocks, people: r.corrected_people, at: r.at.toISOString() }]));
+}
+function productivityRow(t, u, corr = null) {
+  const bt = findBrickType(t.brickType);
+  const aiQ = Number(t.area) || 0;
+  const resultSource = t.resultSource === 'human' && corr && bt ? 'human' : 'ai';
+  const humanLatest = corr && bt ? { ...corr, area: Math.round(corr.blocks * bt.blocksPerSqm * 1000) / 1000 } : null;
+  if (resultSource === 'human') t = { ...t, area: humanLatest.area, blocks: corr.blocks };
+  const activeMinutes = u ? Math.round((u.active_sec / 60) * 10) / 10 : 0;
+  const timeAdjustMinutes = Number(t.timeAdjustMinutes) || 0;
+  const pStdTask = Number(t.pStdOverride) > 0 ? Number(t.pStdOverride) : null;
+  return {
+    taskId: t.id, name: t.name, zone: t.zone || '', status: t.status, copyOf: t.copyOf || null,
+    brickType: bt ? bt.name : null, blocks: t.blocks || 0,
+    images: u ? u.images : 0, activeDays: u ? u.active_days : 0,
+    // inputs behind the numbers, for the step-by-step working on the web page and in exports
+    segments: u && u.segments ? u.segments : [], gapSeconds: IMAGE_GAP_SEC,
+    blocksPerSqm: bt ? bt.blocksPerSqm : null, schedule: t.schedule || null, workers: Array.isArray(t.workers) ? t.workers : [],
+    aiQ, aiBlocks: findTask(t.id)?.blocks ?? t.blocks,
+    resultSource, // ผลลัพธ์ที่ใช้คำนวณจริง ('human' เฉพาะเมื่อเลือกไว้และมีผลตรวจแก้แล้ว)
+    selectedSource: t.resultSource === 'human' ? 'human' : 'ai',
+    humanLatest, // ผลตรวจแก้ล่าสุด (มีหรือไม่ก็ได้ ไม่ว่าจะเลือกใช้หรือไม่)
+    humanCorrected: resultSource === 'human' ? humanLatest : null,
+    firstAt: u ? u.first_at.toISOString() : null, lastAt: u ? u.last_at.toISOString() : null,
+    imageMinutes: activeMinutes, timeAdjustMinutes, // เวลาจากภาพ + ที่ปรับเอง (runMinutes = ผลรวม, ไม่ติดลบ)
+    pStdSource: pStdTask ? 'task' : bt && bt.standardProductivity ? 'brickType' : null,
+    ...productivity.taskProductivity(t, { runMinutes: Math.max(activeMinutes + timeAdjustMinutes, 0) }, pStdTask ?? (bt ? bt.standardProductivity : null),
+      pStdTask ? null : bt && bt.standardProductivityMin ? { min: bt.standardProductivityMin, max: bt.standardProductivityMax ?? bt.standardProductivityMin } : null),
+  };
+}
+const badTzResponse = (res, err, what) => {
+  const badTz = /time zone/i.test(err.message);
+  res.status(badTz ? 400 : 500).json({ success: false, message: badTz ? 'โซนเวลาไม่ถูกต้อง' : what, raw: err.message });
+};
+
+app.get('/api/reports/productivity', async (req, res) => {
+  const tz = String(req.query.tz || schedule.DEFAULT_TZ);
+  try {
+    const [usage, corr] = await Promise.all([taskImageUsage(tz), finalCorrections()]);
+    const list = tasks.map((t) => productivityRow(t, usage.get(t.id), corr.get(t.id)));
+    res.json({ generatedAt: new Date().toISOString(), tasks: list, project: productivity.projectProductivity(list.filter((r) => !r.copyOf)) }); // งานสำเนาไม่นับรวม (กันนับซ้ำ)
+  } catch (err) {
+    badTzResponse(res, err, 'คำนวณ Productivity ไม่สำเร็จ');
+  }
+});
+
+// Productivity + เวลาทำงานของ Task เดียว (หน้า Task Detail)
+app.get('/api/tasks/:id/productivity', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  const tz = String(req.query.tz || schedule.DEFAULT_TZ);
+  try {
+    const [usage, corr] = await Promise.all([taskImageUsage(tz, t.id), finalCorrections(t.id)]);
+    res.json(productivityRow(t, usage.get(t.id), corr.get(t.id)));
+  } catch (err) {
+    badTzResponse(res, err, 'คำนวณ Productivity ไม่สำเร็จ');
+  }
+});
+
+/* =========================================================
+   HUMAN-IN-THE-LOOP — คนตรวจแก้ Label ของภาพที่บันทึกไว้ (ลบกรอบที่ AI ทายผิด / ตีกรอบอิฐที่ AI พลาด)
+   จำนวนหลังแก้คำนวณที่ server ด้วยกฎเดียวกับ AI (จุดกึ่งกลางกรอบอยู่ใน ROI) — ดู humanLabels.js
+========================================================= */
+// รายการภาพของ Task (เบา — ไม่มีกรอบ) สำหรับแถบเลือกภาพ
+app.get('/api/tasks/:id/label-frames', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, at, blocks, area, snapshot, corrected_blocks, people_detected, corrected_people, detections IS NOT NULL AS has_boxes,
+              human_labels->>'by' AS reviewed_by, human_labels->>'at' AS reviewed_at,
+              COALESCE(jsonb_array_length(human_labels->'added'), 0) AS added_n, COALESCE(jsonb_array_length(human_labels->'removed'), 0) AS removed_n,
+              (human_labels->'roi') IS NOT NULL AS roi_edited, excluded_at, excluded_by, excluded_reason
+         FROM task_history WHERE task_id = $1 AND snapshot IS NOT NULL ORDER BY at`,
+      [t.id]
+    );
+    res.json(rows.map((r) => ({
+      id: String(r.id), at: r.at.toISOString(), blocks: r.blocks, area: r.area, snapshot: r.snapshot, hasBoxes: r.has_boxes,
+      correctedBlocks: r.corrected_blocks, peopleDetected: r.people_detected, correctedPeople: r.corrected_people,
+      reviewedBy: r.reviewed_by, reviewedAt: r.reviewed_at, added: Number(r.added_n), removed: Number(r.removed_n),
+      roiEdited: r.roi_edited, ...excludedJson(r),
+    })));
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'ดึงรายการภาพไม่สำเร็จ', raw: err.message });
+  }
+});
+
+async function labelFrameRow(taskId, hid) {
+  if (!/^\d+$/.test(String(hid))) return null;
+  const { rows } = await pool.query(
+    'SELECT id, at, blocks, area, people_detected, snapshot, detections, human_labels, corrected_blocks, corrected_people, excluded_at, excluded_by, excluded_reason FROM task_history WHERE task_id = $1 AND id = $2',
+    [taskId, hid]
+  );
+  return rows[0] || null;
+}
+// A review was saved: the task's reports now follow the human-corrected result (option 2).
+// The reviewer can still switch back to option 1 (AI) on the PD card / summary tab.
+async function useHumanResult(t, username) {
+  if (t.resultSource === 'human' || !findBrickType(t.brickType)) return;
+  t.resultSource = 'human';
+  await upsertTaskRow(t);
+  audit('edit', 'info', `Task "${t.name}" เปลี่ยนผลลัพธ์ที่ใช้เป็น ตัวเลือกที่ 2: ผลตรวจแก้โดยคน (HITL) อัตโนมัติ หลังบันทึกการตรวจแก้`, username);
+}
+
+// Re-save one frame's review with new labels (keeps what the reviewer already did). Returns the counts.
+async function saveFrameLabels(r, t, input, username) {
+  const aiCount = r.detections && r.detections.detections ? r.detections.detections.length : 0;
+  const aiPersonCount = r.detections && r.detections.personDetections ? r.detections.personDetections.length : 0;
+  const { labels, error } = humanLabels.parseLabels(input, aiCount, aiPersonCount);
+  if (error) throw Object.assign(new Error(error), { status: 400 });
+  const c = humanLabels.correctedCount(r.detections, labels, { blocks: r.blocks, people: r.people_detected, roi: frameJson(r, t).roi });
+  const stored = { ...labels, ...c, by: username, at: new Date().toISOString() };
+  await pool.query('UPDATE task_history SET human_labels = $1, corrected_blocks = $2, corrected_people = $3 WHERE id = $4', [JSON.stringify(stored), c.corrected, c.correctedPeople, r.id]);
+  return c;
+}
+
+const frameJson = (r, t) => ({
+  id: String(r.id), at: r.at.toISOString(), blocks: r.blocks, area: r.area, snapshot: r.snapshot,
+  detections: r.detections || null, labels: r.human_labels || null, correctedBlocks: r.corrected_blocks,
+  peopleDetected: r.people_detected, correctedPeople: r.corrected_people,
+  roi: (r.detections && r.detections.roi && r.detections.roi.length >= 3) ? r.detections.roi : (t.roi || []),
+  ...excludedJson(r),
+});
+// excluded = the user took this frame out of the count (see POST .../label-frames/exclude)
+const excludedJson = (r) => ({
+  excluded: !!r.excluded_at, excludedAt: r.excluded_at ? r.excluded_at.toISOString() : null,
+  excludedBy: r.excluded_by || null, excludedReason: r.excluded_reason || null,
+});
+
+app.get('/api/tasks/:id/label-frames/:hid', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  try {
+    const r = await labelFrameRow(t.id, req.params.hid);
+    if (!r) return res.status(404).json({ success: false, message: 'ไม่พบภาพนี้' });
+    res.json(frameJson(r, t));
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'ดึงข้อมูลภาพไม่สำเร็จ', raw: err.message });
+  }
+});
+
+// บันทึกผลตรวจแก้ของภาพเดียว ({ added, removed, note }) หรือ { clear: true } เพื่อล้างกลับไปใช้ค่าของ AI
+// Use one corrected ROI on every saved frame of the task (edits already made on each frame are kept).
+// roi: null = go back to each frame's AI ROI. Every frame with an image becomes "reviewed".
+app.post('/api/tasks/:id/label-frames/apply-roi', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  const { roi, error } = humanLabels.parseRoi(req.body && req.body.roi);
+  if (error) return res.status(400).json({ success: false, message: error });
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, at, blocks, area, people_detected, snapshot, detections, human_labels, corrected_blocks, corrected_people FROM task_history WHERE task_id = $1 AND snapshot IS NOT NULL AND excluded_at IS NULL ORDER BY at',
+      [t.id]
+    );
+    let n = 0;
+    for (const r of rows) {
+      const h = r.human_labels || {};
+      if (!roi && !h.roi) continue; // nothing to undo on this frame
+      await saveFrameLabels(r, t, { added: h.added, removed: h.removed, removedPersons: h.removedPersons, note: h.note, roi }, req.user.username);
+      n++;
+    }
+    if (n) await useHumanResult(t, req.user.username);
+    audit('edit', 'info', `ตรวจแก้ Label Task "${t.name}": ${roi ? `ใช้ ROI ที่แก้กับ ${n} ภาพ` : `คืน ROI เดิมของ AI ให้ ${n} ภาพ`}`, req.user.username);
+    res.json({ success: true, frames: n, resultSource: t.resultSource || 'ai' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.status ? err.message : 'ใช้ ROI กับทุกภาพไม่สำเร็จ', raw: err.message });
+  }
+});
+
+app.put('/api/tasks/:id/label-frames/:hid', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  try {
+    const r = await labelFrameRow(t.id, req.params.hid);
+    if (!r) return res.status(404).json({ success: false, message: 'ไม่พบภาพนี้' });
+    const time = r.at.toLocaleString('th-TH', { timeZone: APP_TIMEZONE, hour12: false });
+    if (req.body && req.body.clear) {
+      await pool.query('UPDATE task_history SET human_labels = NULL, corrected_blocks = NULL, corrected_people = NULL WHERE id = $1', [r.id]);
+      audit('edit', 'info', `ล้างผลตรวจแก้ Label ของ Task "${t.name}" ภาพเวลา ${time}`, req.user.username);
+      return res.json(frameJson({ ...r, human_labels: null, corrected_blocks: null, corrected_people: null }, t));
+    }
+    const aiCount = r.detections && r.detections.detections ? r.detections.detections.length : 0;
+    const aiPersonCount = r.detections && r.detections.personDetections ? r.detections.personDetections.length : 0;
+    const { labels, error } = humanLabels.parseLabels(req.body, aiCount, aiPersonCount);
+    if (error) return res.status(400).json({ success: false, message: error });
+    const roi = frameJson(r, t).roi;
+    const c = humanLabels.correctedCount(r.detections, labels, { blocks: r.blocks, people: r.people_detected, roi });
+    const stored = { ...labels, ...c, by: req.user.username, at: new Date().toISOString() };
+    await pool.query('UPDATE task_history SET human_labels = $1, corrected_blocks = $2, corrected_people = $3 WHERE id = $4', [JSON.stringify(stored), c.corrected, c.correctedPeople, r.id]);
+    audit('edit', 'info', `ตรวจแก้ Label Task "${t.name}" ภาพเวลา ${time}${labels.roi ? ' (แก้ ROI)' : ''}: อิฐ AI ${c.aiInRoi} − ลบ ${c.removedInRoi} + เพิ่ม ${c.addedInRoi} = ${c.corrected} บล็อก · คน AI ${c.aiPersonCount} − ลบ ${c.removedPersonCount} + เพิ่ม ${c.addedPersonCount} = ${c.correctedPeople} คน (ทั้งภาพ)`, req.user.username);
+    await useHumanResult(t, req.user.username);
+    res.json({ ...frameJson({ ...r, human_labels: stored, corrected_blocks: c.corrected, corrected_people: c.correctedPeople }, t), resultSource: t.resultSource || 'ai' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'บันทึกผลตรวจแก้ไม่สำเร็จ', raw: err.message });
+  }
+});
+
+// ตัวเลขปัจจุบันของ Task (blocks/area/คน) มาจากภาพล่าสุดที่ยังนับอยู่ — ใช้คู่กับ followLatestFrame
+async function latestCountedFrame(taskId) {
+  const { rows } = await pool.query(
+    'SELECT at, blocks, area, people_detected FROM task_history WHERE task_id = $1 AND excluded_at IS NULL ORDER BY at DESC LIMIT 1',
+    [taskId]
+  );
+  return rows[0] || null;
+}
+// หลังลบ / ตัด / กู้คืนภาพ: ถ้าภาพล่าสุดที่นับเปลี่ยนไป ตัวเลขปัจจุบันของ Task ต้องตามภาพนั้น
+// (before = latestCountedFrame ก่อนแก้) — แก้ภาพเก่าที่ไม่ใช่ภาพล่าสุดจะไม่แตะตัวเลขปัจจุบัน
+async function followLatestFrame(t, before) {
+  const after = await latestCountedFrame(t.id);
+  if ((before ? before.at.getTime() : null) === (after ? after.at.getTime() : null)) return;
+  Object.assign(t, after
+    ? { blocks: after.blocks, area: after.area, peopleDetected: after.people_detected || 0 }
+    : { blocks: 0, area: 0, peopleDetected: 0 });
+  lastDetections.delete(t.id);
+  lastFrameLabels.delete(t.id);
+  lastSnapshotBuffers.delete(t.id);
+  await upsertTaskRow(t);
+}
+
+// ตัดภาพออกจากการนับ / กู้คืน — ผู้ใช้เลือกเองจากหน้าตรวจแก้ Label (ภาพเสีย / ย้ายกล้อง / กล้องเบี้ยว / ถูกบัง)
+// body: { ids: ['123', ...], excluded: true|false, reason? } — แถวและไฟล์ภาพยังอยู่ กู้คืนได้ตลอด
+// ภาพที่ถูกตัดไม่นับในกราฟ, Productivity (Q และ T), รายงาน, สรุปผลตรวจแก้ และไทม์แลปส์
+const EXCLUDE_REASONS = { camera_moved: 'ย้ายกล้อง / กล้องเบี้ยว', blocked: 'ภาพถูกบัง', bad_image: 'ภาพเสีย / มืด / เบลอ', off_hours: 'นอกเวลาทำงาน', other: 'อื่น ๆ' };
+const EXCLUDE_MAX_IDS = 5000;
+app.post('/api/tasks/:id/label-frames/exclude', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  const body = req.body || {};
+  const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(String))] : [];
+  if (!ids.length || ids.length > EXCLUDE_MAX_IDS || !ids.every((id) => /^\d+$/.test(id))) {
+    return res.status(400).json({ success: false, message: 'เลือกภาพที่จะตัดออก / กู้คืนก่อน' });
+  }
+  const exclude = body.excluded !== false;
+  const reason = exclude ? (EXCLUDE_REASONS[body.reason] ? body.reason : 'other') : null;
+  try {
+    const before = await latestCountedFrame(t.id);
+    const { rows } = await pool.query(
+      `UPDATE task_history SET excluded_at = ${exclude ? 'now()' : 'NULL'}, excluded_by = $3, excluded_reason = $4
+        WHERE task_id = $1 AND id = ANY($2::bigint[]) AND (excluded_at IS NULL) = $5
+        RETURNING id, at`,
+      [t.id, ids, exclude ? req.user.username : null, reason, exclude]
+    );
+    await followLatestFrame(t, before);
+    if (rows.length) {
+      const fmt = (d) => d.toLocaleString('th-TH', { timeZone: APP_TIMEZONE, hour12: false });
+      const ats = rows.map((r) => r.at).sort((a, b) => a - b);
+      const when = ats.length === 1 ? `เวลา ${fmt(ats[0])}` : `${ats.length} ภาพ (${fmt(ats[0])} – ${fmt(ats[ats.length - 1])})`;
+      audit('edit', exclude ? 'warn' : 'info', exclude
+        ? `ตัดภาพของ Task "${t.name}" ${when} ออกจากการนับ: ${EXCLUDE_REASONS[reason]}`
+        : `กู้คืนภาพของ Task "${t.name}" ${when} กลับมานับ`, req.user.username);
+    }
+    res.json({ success: true, changed: rows.map((r) => String(r.id)), excluded: exclude, reason, task: { blocks: t.blocks, area: t.area, peopleDetected: t.peopleDetected } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: exclude ? 'ตัดภาพออกไม่สำเร็จ' : 'กู้คืนภาพไม่สำเร็จ', raw: err.message });
+  }
+});
+
+// ลบภาพ 1 ภาพทิ้งถาวร: แถว task_history (จำนวนอิฐ/คนที่ AI นับ + ผลตรวจแก้) และไฟล์ภาพ — กู้คืนไม่ได้
+// ลบได้เฉพาะภาพที่ตัดออกจากการนับแล้ว (กันกดลบผิดภาพ — ตัดออกก่อนยังกู้คืนได้)
+app.delete('/api/tasks/:id/label-frames/:hid', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  try {
+    const r = await labelFrameRow(t.id, req.params.hid);
+    if (!r) return res.status(404).json({ success: false, message: 'ไม่พบภาพนี้ (อาจถูกลบไปแล้ว)' });
+    if (!r.excluded_at) return res.status(409).json({ success: false, message: 'ตัดภาพนี้ออกจากการนับก่อน แล้วจึงลบถาวรได้' });
+    await pool.query('DELETE FROM task_history WHERE id = $1 AND task_id = $2', [r.id, t.id]);
+
+    // ไฟล์ภาพ: ลบเฉพาะไฟล์ในโฟลเดอร์ของ Task นี้ และเมื่อไม่มีแถวอื่นอ้างถึงแล้ว (งานสำเนาใช้ hard link แยกโฟลเดอร์ จึงไม่กระทบ)
+    const prefix = `/snapshots/${t.id}/`;
+    if (r.snapshot && r.snapshot.startsWith(prefix)) {
+      const file = r.snapshot.slice(prefix.length);
+      if (FRAME_RE.test(file) && !file.includes('/')) {
+        const { rows: refs } = await pool.query('SELECT 1 FROM task_history WHERE snapshot = $1 LIMIT 1', [r.snapshot]);
+        if (!refs.length) fs.rm(path.join(SNAPSHOTS_DIR, t.id, file), { force: true }, () => {});
+      }
+    }
+    // ภาพที่ตัดออกแล้วไม่ใช่ภาพที่นับอยู่ — ตัวเลขปัจจุบันของ Task ไม่เปลี่ยน
+
+    const time = r.at.toLocaleString('th-TH', { timeZone: APP_TIMEZONE, hour12: false });
+    audit('edit', 'warn', `ลบภาพของ Task "${t.name}" เวลา ${time} ทิ้งถาวร (AI นับอิฐ ${r.blocks} บล็อก · คน ${r.people_detected || 0}${r.corrected_blocks != null ? ` · หลังตรวจแก้ ${r.corrected_blocks}` : ''})`, req.user.username);
+    res.json({ success: true, id: String(r.id) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'ลบภาพไม่สำเร็จ', raw: err.message });
+  }
+});
+
+// สรุปผลตรวจแก้ทั้ง Task: ภาพที่ตรวจแล้ว + ความแม่นยำโดยประมาณของ AI
+app.get('/api/tasks/:id/label-summary', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, at, blocks, people_detected, corrected_blocks, corrected_people, human_labels FROM task_history
+        WHERE task_id = $1 AND corrected_blocks IS NOT NULL AND excluded_at IS NULL ORDER BY at`,
+      [t.id]
+    );
+    const bt = findBrickType(t.brickType);
+    const frames = rows.map((r) => {
+      const h = r.human_labels || {};
+      return {
+        id: String(r.id), at: r.at.toISOString(), aiBlocks: r.blocks, correctedBlocks: r.corrected_blocks,
+        aiInRoi: h.aiInRoi ?? r.blocks, removedInRoi: h.removedInRoi || 0, addedInRoi: h.addedInRoi || 0,
+        aiPeople: r.people_detected, correctedPeople: r.corrected_people ?? r.people_detected,
+        aiPersonCount: h.aiPersonCount ?? r.people_detected, removedPersonCount: h.removedPersonCount || 0, addedPersonCount: h.addedPersonCount || 0,
+        correctedArea: bt ? Math.round(r.corrected_blocks * bt.blocksPerSqm * 1000) / 1000 : null,
+        by: h.by || null, reviewedAt: h.at || null, note: h.note || '',
+      };
+    });
+    const corr = (await finalCorrections(t.id)).get(t.id) || null;
+    res.json({ blocksPerSqm: bt ? bt.blocksPerSqm : null, frames, stats: humanLabels.reviewStats(frames), finalCorrected: corr, resultSource: t.resultSource === 'human' ? 'human' : 'ai' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'สรุปผลตรวจแก้ไม่สำเร็จ', raw: err.message });
   }
 });
 
@@ -705,18 +1299,53 @@ app.get('/api/tasks/:id/history', async (req, res) => {
 ========================================================= */
 app.get('/api/bricktypes', (req, res) => res.json(brickTypes));
 
+// P มาตรฐาน (ตร.ม./คน-วัน): ว่าง = ยังไม่ตั้ง (null), ไม่งั้นต้องเป็นตัวเลขมากกว่า 0. คืน undefined ถ้าค่าไม่ถูกต้อง
+function parseStandardProductivity(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+// P มาตรฐานเป็นช่วง (min–max) หรือค่าเดียว -> { min, max, mid } ; null = ไม่ตั้ง ; { error } = ค่าผิด
+// body: standardProductivityMin/Max (ช่วง) หรือ standardProductivity (ค่าเดียว = min = max)
+function parseStandardRange(body) {
+  const hasRange = body.standardProductivityMin !== undefined || body.standardProductivityMax !== undefined;
+  if (!hasRange && body.standardProductivity === undefined) return undefined; // not in this request
+  let min, max;
+  if (hasRange) {
+    min = parseStandardProductivity(body.standardProductivityMin);
+    max = parseStandardProductivity(body.standardProductivityMax);
+    if (min === null && max !== null && max !== undefined) min = max;
+    if (max === null && min !== null && min !== undefined) max = min;
+  } else {
+    min = max = parseStandardProductivity(body.standardProductivity);
+  }
+  if (min === undefined || max === undefined) return { error: 'P มาตรฐานต้องเป็นตัวเลขมากกว่า 0 (ตร.ม./คน-วัน)' };
+  if (min === null) return null;
+  if (max < min) return { error: 'P มาตรฐานสูงสุดต้องไม่น้อยกว่าต่ำสุด' };
+  return { min, max, mid: Math.round(((min + max) / 2) * 1000) / 1000 };
+}
+const applyStandardRange = (bt, r) => Object.assign(bt, r
+  ? { standardProductivity: r.mid, standardProductivityMin: r.min, standardProductivityMax: r.max }
+  : { standardProductivity: null, standardProductivityMin: null, standardProductivityMax: null });
+
 app.post('/api/bricktypes', async (req, res) => {
   const { name, blocksPerSqm, classId } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ success: false, message: 'กรุณากรอกชื่อประเภทอิฐ' });
-  const ratio = Number(blocksPerSqm);
-  if (!ratio || ratio <= 0) return res.status(400).json({ success: false, message: 'กรุณากรอกจำนวนบล็อกต่อตารางเมตรให้ถูกต้อง' });
+  const std = parseStandardRange(req.body || {});
+  if (std && std.error) return res.status(400).json({ success: false, message: std.error });
+  const sz = parseBrickSize((req.body || {}).size);
+  if (sz && sz.error) return res.status(400).json({ success: false, message: sz.error });
+  const ratio = sz && sz.size ? brickArea(sz.size) : Number(blocksPerSqm); // size given = area computed from it
+  if (!ratio || ratio <= 0) return res.status(400).json({ success: false, message: 'กรุณากรอกขนาดอิฐ (หรือพื้นที่ต่อก้อน) ให้ถูกต้อง' });
   const bt = {
     id: 'bt' + crypto.randomUUID().slice(0, 8),
     name: name.trim(),
     blocksPerSqm: ratio,
     // ถ้า best.pt มีหลาย class อิฐ ระบุ index ของ class ที่ตรงกับประเภทนี้ — ว่าง/null = นับทุก class ที่โมเดลเจอ
     classId: classId === '' || classId === undefined || classId === null ? null : Number(classId),
+    size: sz ? sz.size : null,
   };
+  applyStandardRange(bt, std || null);
   try {
     await upsertBrickTypeRow(bt);
     brickTypes.push(bt);
@@ -730,15 +1359,25 @@ app.put('/api/bricktypes/:id', async (req, res) => {
   const bt = findBrickType(req.params.id);
   if (!bt) return res.status(404).json({ success: false, message: 'ไม่พบประเภทอิฐนี้' });
   const { name, blocksPerSqm, classId } = req.body || {};
+  const std = parseStandardRange(req.body || {});
+  if (std && std.error) return res.status(400).json({ success: false, message: std.error });
+  if (std !== undefined) applyStandardRange(bt, std);
+  const sz = parseBrickSize((req.body || {}).size);
+  if (sz && sz.error) return res.status(400).json({ success: false, message: sz.error });
+  if (sz !== undefined) {
+    bt.size = sz.size;
+    if (sz.size) bt.blocksPerSqm = brickArea(sz.size); // area per brick follows the size
+  }
   if (classId !== undefined) bt.classId = classId === '' || classId === null ? null : Number(classId);
   if (name !== undefined) bt.name = String(name).trim();
-  if (blocksPerSqm !== undefined) {
+  if (blocksPerSqm !== undefined && !bt.size) { // typed by hand only while no size is set
     const ratio = Number(blocksPerSqm);
     if (!ratio || ratio <= 0) return res.status(400).json({ success: false, message: 'จำนวนบล็อกต่อตารางเมตรต้องมากกว่า 0' });
     bt.blocksPerSqm = ratio;
   }
   try {
     await upsertBrickTypeRow(bt);
+    await syncTaskAreas((t) => t.brickType === bt.id);
     res.json(bt);
   } catch (err) {
     res.status(500).json({ success: false, message: 'บันทึกประเภทอิฐไม่สำเร็จ', raw: err.message });
@@ -962,7 +1601,7 @@ app.get('/api/alertconfig', (req, res) => res.json(alertConfig));
 
 app.put('/api/alertconfig', async (req, res) => {
   const body = req.body || {};
-  const editable = ['webhook', 'cameraOffline', 'serverOffline', 'aiStopped', 'internetDown', 'noImage'];
+  const editable = ['webhook', 'cameraOffline', 'serverOffline', 'aiStopped', 'internetDown', 'noImage', 'chipHot'];
   editable.forEach((key) => {
     if (body[key] !== undefined) alertConfig[key] = body[key];
   });
@@ -1159,6 +1798,7 @@ const PHASE_LABEL = { work: 'เริ่มงาน', break: 'เริ่ม�
 async function scheduleTick() {
   const nowMin = schedule.minutesNow(new Date(), APP_TIMEZONE);
   for (const t of tasks) {
+    if (t.copyOf) continue; // งานสำเนา (Duplicate) ไม่มีกล้อง — ไม่ auto start/pause
     const { phase, status } = schedule.evaluate(t, nowMin);
     if (phase === (t.autoPhase || null) && !status) continue;
     const prev = { status: t.status, autoPhase: t.autoPhase, lastUpdate: t.lastUpdate };
@@ -1187,13 +1827,24 @@ async function scheduleTick() {
 const NO_IMAGE_SECONDS = Number(process.env.NO_IMAGE_SECONDS) || 600;
 const lostImageTasks = new Set(); // taskId ที่อยู่ในสถานะ Loss data
 const runningSince = new Map(); // taskId -> epoch ms ที่เห็นว่าเริ่ม running (กัน false alarm ตอนเพิ่งกดเริ่ม/หลัง restart)
+// ผลการส่งแจ้งเตือนครั้งล่าสุด — แสดงในหน้า Device Monitor ว่า Discord ใช้งานได้จริงไหม
+let lastDiscordAlert = null; // { at, ok, text, error }
 async function sendDiscordAlert(text) {
   const webhook = (alertConfig.webhook || '').trim();
-  if (!webhook) return;
+  if (!webhook) {
+    lastDiscordAlert = { at: new Date().toISOString(), ok: false, text, error: 'ยังไม่ได้ตั้งค่า Discord Webhook' };
+    return false;
+  }
   try {
-    await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }) });
+    const r = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }), signal: AbortSignal.timeout(8000) });
+    const ok = r.ok; // Discord ตอบ 204 เมื่อสำเร็จ
+    lastDiscordAlert = { at: new Date().toISOString(), ok, text, error: ok ? null : `HTTP ${r.status} ${(await r.text().catch(() => '')).slice(0, 200)}` };
+    if (!ok) console.error('[alert] discord rejected:', lastDiscordAlert.error);
+    return ok;
   } catch (err) {
+    lastDiscordAlert = { at: new Date().toISOString(), ok: false, text, error: err.message };
     console.error('[alert] discord send failed:', err.message);
+    return false;
   }
 }
 async function imageWatchTick() {
@@ -1220,6 +1871,148 @@ async function imageWatchTick() {
       lostImageTasks.delete(t.id);
       audit('camera', 'info', `Task "${t.name}" ได้รับภาพจากกล้องอีกครั้ง — กลับสู่ปกติ`);
       if (alertConfig.noImage) sendDiscordAlert(`✅ CIVIL — Task "${t.name}" ได้รับภาพจากกล้องอีกครั้งแล้ว`);
+    }
+  }
+}
+
+/* =========================================================
+   DEVICE MONITOR — ESP32 ส่ง telemetry มาที่ POST /api/devices/heartbeat (ทุก ~15 วินาที)
+   ยืนยันตัวตนด้วย username/password FTP ของกล้องที่ ESP ตัวนั้นส่งภาพให้ (Basic auth) — ไม่ต้องมี secret ใหม่
+   ไม่ยุ่งกับช่องทางรับภาพ FTP เป็น endpoint แยกต่างหาก
+========================================================= */
+const devices = new Map(); // cameraId -> { lastSeen, ip, lastUploadAt, data, history }
+async function loadDeviceStatusFromDB() {
+  const { rows } = await pool.query('SELECT camera_id, last_seen, remote_ip, data FROM device_status');
+  for (const r of rows) {
+    const d = r.data || {};
+    devices.set(r.camera_id, { lastSeen: r.last_seen.toISOString(), ip: r.remote_ip, lastUploadAt: d.lastUploadAt || null, data: d.telemetry || {}, history: [] });
+  }
+}
+const safeEqual = (a, b) => {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
+const lastHeartbeatWrite = new Map(); // cameraId -> ms — DB write at most every 60 s per device
+app.post('/api/devices/heartbeat', async (req, res) => {
+  const m = /^Basic\s+(.+)$/i.exec(req.headers.authorization || '');
+  const [user, pass] = m ? Buffer.from(m[1], 'base64').toString('utf8').split(/:(.*)/s) : [];
+  const cam = user ? cameras.find((c) => c.mode === 'ftp' && c.ftpUsername && safeEqual(c.ftpUsername, user)) : null;
+  if (!cam || !safeEqual(cam.ftpPassword || '', pass || '')) return res.status(401).json({ success: false, message: 'unauthorized' });
+  const data = deviceMonitor.sanitizeTelemetry(req.body);
+  const rec = deviceMonitor.applyHeartbeat(devices.get(cam.id), data, { ip: req.ip });
+  devices.set(cam.id, rec);
+  const now = Date.now();
+  if (now - (lastHeartbeatWrite.get(cam.id) || 0) > 60 * 1000) {
+    lastHeartbeatWrite.set(cam.id, now);
+    pool.query(
+      `INSERT INTO device_status (camera_id, last_seen, remote_ip, data) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (camera_id) DO UPDATE SET last_seen=EXCLUDED.last_seen, remote_ip=EXCLUDED.remote_ip, data=EXCLUDED.data`,
+      [cam.id, rec.lastSeen, rec.ip, JSON.stringify({ telemetry: data, lastUploadAt: rec.lastUploadAt })]
+    ).catch((e) => console.error('[devices] persist failed:', e.message));
+  }
+  res.json({ success: true, serverTime: new Date(now).toISOString() });
+});
+
+// สถานะ AI service (cache 10 วินาที — หน้า Device Monitor refresh ถี่)
+let yoloHealthCache = { at: 0, value: null };
+async function yoloHealth() {
+  if (Date.now() - yoloHealthCache.at < 10000 && yoloHealthCache.value) return yoloHealthCache.value;
+  let value;
+  try {
+    const t0 = Date.now();
+    const r = await fetch(`${YOLO_SERVICE_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    const j = r.ok ? await r.json() : null;
+    value = { ok: !!(j && j.ok), latencyMs: Date.now() - t0, modelLoaded: !!(j && j.model_loaded), personModelLoaded: !!(j && j.person_model_loaded), modelPath: j ? j.model_path : null };
+  } catch (err) {
+    value = { ok: false, error: err.message };
+  }
+  yoloHealthCache = { at: Date.now(), value };
+  return value;
+}
+
+async function serverStats() {
+  const mem = process.memoryUsage();
+  let disk = null;
+  try {
+    const st = await fs.promises.statfs(SNAPSHOTS_DIR);
+    disk = { total: st.blocks * st.bsize, free: st.bavail * st.bsize };
+  } catch (_) { /* statfs unavailable */ }
+  let dbOk = true, dbMs = null;
+  try { const t0 = Date.now(); await pool.query('SELECT 1'); dbMs = Date.now() - t0; } catch (_) { dbOk = false; }
+  return {
+    hostname: os.hostname(), uptimeSec: Math.round(os.uptime()), processUptimeSec: Math.round(process.uptime()),
+    cpus: os.cpus().length, load: os.loadavg(), memTotal: os.totalmem(), memFree: os.freemem(), rss: mem.rss, disk, gpu: null,
+    db: { ok: dbOk, latencyMs: dbMs },
+  };
+}
+
+app.get('/api/devices', async (req, res) => {
+  const now = Date.now();
+  const [ai, server] = await Promise.all([yoloHealth(), serverStats()]);
+  const list = cameras.filter((c) => c.mode === 'ftp').map((c) => {
+    const rec = devices.get(c.id) || null;
+    const running = tasks.filter((t) => t.cameraId === c.id && t.status === 'running');
+    const lastImageAt = running.map((t) => t.lastImageAt).filter(Boolean).sort().pop() || null;
+    const det = running.map((t) => lastDetections.get(t.id)).filter(Boolean).sort((a, b) => b.at - a.at)[0] || null;
+    return {
+      cameraId: c.id, cameraName: c.name, zone: c.zone || '', cameraStatus: c.status || 'unknown',
+      online: deviceMonitor.isOnline(rec, now), lastSeen: rec ? rec.lastSeen : null, ip: rec ? rec.ip : null,
+      lastUploadAt: rec ? rec.lastUploadAt : null, telemetry: rec ? rec.data : null, history: rec ? rec.history : [],
+      runningTasks: running.map((t) => ({ id: t.id, name: t.name, lastImageAt: t.lastImageAt || null, imageLost: lostImageTasks.has(t.id) })),
+      lastImageAt, lastDetectionAt: det ? new Date(det.at).toISOString() : null,
+    };
+  });
+  res.json({
+    now: new Date(now).toISOString(), devices: list, ai, server,
+    discord: {
+      configured: !!(alertConfig.webhook || '').trim(), lastAlert: lastDiscordAlert,
+      enabled: { cameraOffline: !!alertConfig.cameraOffline, serverOffline: !!alertConfig.serverOffline, aiStopped: !!alertConfig.aiStopped, internetDown: !!alertConfig.internetDown, noImage: !!alertConfig.noImage, chipHot: !!alertConfig.chipHot },
+      active: [...activeAlerts],
+    },
+  });
+});
+
+/* ---- การแจ้งเตือนที่เหลือ (นอกจาก Loss data): เช็คทุก 30 วินาที แจ้งครั้งเดียวตอนเริ่มมีปัญหา + ครั้งเดียวตอนหาย ----
+   internetDown: ESP ไม่ส่ง heartbeat เกิน 3 นาที (เน็ตหน้างานหลุด / ESP ดับ)
+   cameraOffline: ESP ดึงภาพจากกล้องไม่ได้ติดกัน 3 รอบ
+   aiStopped: AI service ไม่ตอบ 2 รอบติด (~1 นาที)
+   chipHot: อุณหภูมิชิป ESP32 ถึง 75°C (หายเมื่อเย็นลงต่ำกว่า 70°C)
+   serverOffline: server แจ้งเองตอนเริ่มทำงาน (หลังดับ/รีสตาร์ท) และตอนถูกสั่งหยุด — ถ้าเครื่องดับกะทันหัน
+                  จะรู้ได้จากข้อความ "กลับมาออนไลน์" ตอนเปิดใหม่เท่านั้น (ตัวเองแจ้งตอนตายไม่ได้) */
+let activeAlerts = new Set();
+let aiFailStreak = 0;
+const ALERT_TEXT = {
+  internetDown: (n, on) => (on ? `⚠️ CIVIL — อุปกรณ์หน้างาน "${n}" ขาดการติดต่อเกิน 3 นาที (เน็ตหน้างานหลุด หรือ ESP32 ดับ)` : `✅ CIVIL — อุปกรณ์หน้างาน "${n}" กลับมาออนไลน์แล้ว`),
+  cameraOffline: (n, on) => (on ? `📷 CIVIL — ESP32 ดึงภาพจากกล้อง "${n}" ไม่ได้ (ล้มติดกันหลายรอบ)` : `✅ CIVIL — กล้อง "${n}" ส่งภาพได้ตามปกติแล้ว`),
+  chipHot: (n, on, t) => (on ? `🌡️ CIVIL — ชิป ESP32 ของ "${n}" ร้อน ${t ?? '—'}°C (ถึง ${deviceMonitor.CHIP_HOT_C}°C) ควรระบายความร้อน / บังแดดกล่อง` : `✅ CIVIL — ชิป ESP32 ของ "${n}" เย็นลงแล้ว (${t ?? '—'}°C)`),
+  aiStopped: (n, on) => (on ? '🤖 CIVIL — AI service (YOLO) ไม่ตอบสนอง การนับอิฐหยุดทำงาน' : '✅ CIVIL — AI service (YOLO) กลับมาทำงานแล้ว'),
+};
+async function alertWatchTick() {
+  const now = Date.now();
+  const ai = await yoloHealth();
+  aiFailStreak = ai.ok ? 0 : aiFailStreak + 1;
+  const conditions = { aiStopped: aiFailStreak >= 2 };
+  const names = { aiStopped: 'AI' };
+  const temps = {};
+  for (const c of cameras.filter((x) => x.mode === 'ftp')) {
+    const rec = devices.get(c.id);
+    if (!rec) continue; // device never reported — nothing to compare against yet
+    conditions[`internetDown:${c.id}`] = !deviceMonitor.isOnline(rec, now);
+    conditions[`cameraOffline:${c.id}`] = deviceMonitor.isOnline(rec, now) && deviceMonitor.cameraDown(rec);
+    names[`internetDown:${c.id}`] = c.name;
+    names[`cameraOffline:${c.id}`] = c.name;
+    conditions[`chipHot:${c.id}`] = deviceMonitor.isOnline(rec, now) && deviceMonitor.chipHot(rec, activeAlerts.has(`chipHot:${c.id}`));
+    names[`chipHot:${c.id}`] = c.name;
+    temps[`chipHot:${c.id}`] = rec.data.chipTempC;
+  }
+  const { active, fired, cleared } = deviceMonitor.diffAlerts(activeAlerts, conditions);
+  activeAlerts = active;
+  for (const [keys, on] of [[fired, true], [cleared, false]]) {
+    for (const key of keys) {
+      const kind = key.split(':')[0];
+      const text = ALERT_TEXT[kind](names[key], on, temps[key]);
+      audit(kind === 'aiStopped' ? 'error' : 'camera', on ? 'error' : 'info', text.replace(/^\S+ CIVIL — /, ''));
+      if (alertConfig[kind]) sendDiscordAlert(text);
     }
   }
 }
@@ -1309,6 +2102,8 @@ async function detectFromImageBuffer(t, jpeg) {
       personCount: t.peopleDetected,
       at: Date.now(),
     });
+    // ภาพ + กรอบ AI ของภาพเดียวกัน — appendTaskHistorySnapshot บันทึกกรอบคู่กับ snapshot เฉพาะเมื่อเป็นภาพเดียวกันจริง
+    lastFrameLabels.set(t.id, { jpeg, label: compactLabel(result, personResult, t.roi) });
 
     return { success: true, task: t, detection: result, personDetection: personResult };
   } catch (err) {
@@ -1360,6 +2155,19 @@ app.post('/api/tasks/:id/detect', async (req, res) => {
 ========================================================= */
 const AUTO_DETECT_TICK_MS = 1000; // ความละเอียดของตัว scheduler เอง — จังหวะตรวจจับจริงต่อ Task ดู snapshotInterval ของแต่ละ Task
 const lastDetections = new Map(); // taskId -> { detections, image_width, image_height, at }
+const lastFrameLabels = new Map(); // taskId -> { jpeg: Buffer ของภาพที่ตรวจจับ, label } — ให้ timeline เก็บกรอบคู่กับภาพที่ตรงกัน
+const round1 = (n) => Math.round(Number(n) * 10) / 10;
+// กรอบ AI แบบกระชับสำหรับเก็บใน task_history.detections (ดู migrations/006_history_detections.sql)
+function compactLabel(result, personResult, roi) {
+  const box = (d) => ({ x1: round1(d.x1), y1: round1(d.y1), x2: round1(d.x2), y2: round1(d.y2), conf: Math.round(d.conf * 1000) / 1000, in_roi: !!d.in_roi });
+  return {
+    image_width: result.image_width,
+    image_height: result.image_height,
+    roi: Array.isArray(roi) ? roi : [],
+    detections: (result.detections || []).map(box),
+    personDetections: personResult ? (personResult.detections || []).map(box) : [],
+  };
+}
 const inFlightDetections = new Set(); // taskId ที่กำลังตรวจจับอยู่ (กันซ้อนรอบ)
 const lastDetectStartedAt = new Map(); // taskId -> epoch ms ของรอบตรวจจับล่าสุดที่เริ่ม (ใช้คุมจังหวะตาม snapshotInterval)
 
@@ -1734,10 +2542,13 @@ async function main() {
       loadAlertConfigFromDB(),
       loadStorageConfigFromDB(),
     ]);
+    await loadDeviceStatusFromDB();
   } catch (err) {
     console.error('FATAL: could not connect to / load from PostgreSQL:', err.message);
     process.exit(1);
   }
+  setInterval(() => alertWatchTick().catch((err) => console.error('[alerts] tick failed:', err.message)), 30 * 1000);
+  if (alertConfig.serverOffline) sendDiscordAlert(`🟢 CIVIL — server เริ่มทำงานแล้ว (${new Date().toLocaleString('th-TH', { timeZone: APP_TIMEZONE, hour12: false })}) — ถ้าไม่ได้สั่งรีสตาร์ท แปลว่าก่อนหน้านี้ server ดับไป`);
 
   setInterval(() => { appendTaskHistorySnapshot().catch((err) => console.error('[history] tick failed:', err.message)); }, HISTORY_SNAPSHOT_INTERVAL_MS);
   setInterval(sweepOldSnapshots, 60 * 60 * 1000); // เช็คทุก 1 ชั่วโมง
@@ -1780,7 +2591,16 @@ async function main() {
 
 main();
 
-process.on('SIGINT', () => {
+// pm2 restart/stop ส่ง SIGINT, systemd/shutdown ส่ง SIGTERM — แจ้ง Discord ก่อนปิด (รอไม่เกิน 3 วินาที)
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   activeStreamCleanups.forEach((fn) => fn());
+  if (alertConfig && alertConfig.serverOffline) {
+    await Promise.race([sendDiscordAlert(`🔴 CIVIL — server กำลังหยุดทำงาน (${signal})`), new Promise((r) => setTimeout(r, 3000))]);
+  }
   process.exit(0);
-});
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

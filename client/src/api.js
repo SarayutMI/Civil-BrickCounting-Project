@@ -43,6 +43,15 @@ export async function me() {
 export async function logout() {
   try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* session cookie expires on its own */ }
 }
+// Device Monitor: ESP32 telemetry + server / AI / Discord health (server.js GET /api/devices)
+export async function getDevices() {
+  try {
+    const res = await fetch('/api/devices');
+    return res.ok ? res.json() : null;
+  } catch (_) {
+    return null;
+  }
+}
 export async function getLogs(limit = 500) {
   const res = await fetch(`/api/logs?limit=${limit}`);
   return res.ok ? res.json() : [];
@@ -81,13 +90,87 @@ export async function deleteTask(id) {
   const data = await asJson(res);
   return { ok: res.ok, data };
 }
-export async function getTaskHistory(id, { from, to, limit } = {}) {
+// Use one corrected ROI on every saved frame of a task (roi: null = back to the AI ROI).
+export async function applyLabelRoi(taskId, roi) {
+  const res = await fetch(`/api/tasks/${taskId}/label-frames/apply-roi`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roi }) });
+  return { ok: res.ok, data: await asJson(res) };
+}
+// Copy a task with its settings + full history (images, AI boxes, human labels) — the copy has no camera.
+export async function duplicateTask(id, name) {
+  const res = await fetch(`/api/tasks/${id}/duplicate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+  return { ok: res.ok, data: await asJson(res) };
+}
+// Delete a task's history, images and labels (settings stay). confirmName must equal the task name.
+export async function clearTaskData(id, confirmName) {
+  const res = await fetch(`/api/tasks/${id}/clear`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmName }) });
+  return { ok: res.ok, data: await asJson(res) };
+}
+// detections=true also returns each minute's AI boxes (Timeline "AI Label" view) — heavier, so opt-in.
+export async function getTaskHistory(id, { from, to, limit, detections } = {}) {
   const qs = new URLSearchParams();
   if (from) qs.set('from', from);
   if (to) qs.set('to', to);
   if (limit) qs.set('limit', limit);
+  if (detections) qs.set('detections', '1');
   const q = qs.toString();
   const res = await fetch(`/api/tasks/${id}/history${q ? `?${q}` : ''}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+// Productivity (P = Q / (N x T), % vs standard, durations) for every task — see productivity.js
+/* ---------------- HUMAN-IN-THE-LOOP LABEL REVIEW ---------------- */
+export async function getLabelFrames(taskId) {
+  const res = await fetch(`/api/tasks/${taskId}/label-frames`);
+  return res.ok ? res.json() : [];
+}
+export async function getLabelFrame(taskId, frameId) {
+  const res = await fetch(`/api/tasks/${taskId}/label-frames/${frameId}`);
+  return res.ok ? res.json() : null;
+}
+// body: { added, removed, note } or { clear: true }
+export async function saveLabelFrame(taskId, frameId, body) {
+  const res = await fetch(`/api/tasks/${taskId}/label-frames/${frameId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await asJson(res);
+  return { ok: res.ok, data };
+}
+// ตัดภาพออกจากการนับ (excluded: true, reason) หรือกู้คืน (excluded: false) — หลายภาพพร้อมกันได้
+export async function excludeLabelFrames(taskId, ids, excluded, reason) {
+  const res = await fetch(`/api/tasks/${taskId}/label-frames/exclude`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, excluded, reason }),
+  });
+  const data = await asJson(res);
+  return { ok: res.ok, data };
+}
+// ลบภาพที่ตัดออกแล้วทิ้งถาวร (ภาพ + จำนวนที่ AI นับ + ผลตรวจแก้) — กู้คืนไม่ได้
+export async function deleteLabelFrame(taskId, frameId) {
+  const res = await fetch(`/api/tasks/${taskId}/label-frames/${frameId}`, { method: 'DELETE' });
+  const data = await asJson(res);
+  return { ok: res.ok, data };
+}
+export async function getLabelSummary(taskId) {
+  const res = await fetch(`/api/tasks/${taskId}/label-summary`);
+  return res.ok ? res.json() : null;
+}
+
+// Productivity + work time (from image timestamps) for one task — Task Detail page
+export async function getTaskProductivity(id) {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Bangkok';
+  const res = await fetch(`/api/tasks/${id}/productivity?tz=${encodeURIComponent(tz)}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+export async function getProductivityReport() {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Bangkok';
+  const res = await fetch(`/api/reports/productivity?tz=${encodeURIComponent(tz)}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+// Days (in the viewer's time zone) that have timeline rows for a task, newest first: [{ date, count, first, last }]
+export async function getTaskHistoryDays(id) {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Bangkok';
+  const res = await fetch(`/api/tasks/${id}/history/days?tz=${encodeURIComponent(tz)}`);
   if (!res.ok) return [];
   return res.json();
 }

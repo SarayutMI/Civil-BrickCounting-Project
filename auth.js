@@ -42,7 +42,7 @@ function requiredPermission(method, path) {
   if (/^\/api\/(users|alertconfig|alerts|storage)(\/|$)/.test(path)) return 'settings'; // incl. reads
   if (/^\/api\/(test-rtsp)$/.test(path)) return 'settings';
   if (/^\/api\/logs$/.test(path)) return 'logs';
-  if (/^\/api\/logs$/.test(path)) return 'logs';
+  if (/^\/api\/devices(\/|$)/.test(path)) return 'devices'; // Device Monitor page (the ESP heartbeat itself skips session auth)
   if (!write) return null;
   if (/^\/api\/(roles|bricktypes|workers)(\/|$)/.test(path)) return 'settings';
   if (/^\/api\/cameras\/[^/]+\/view$/.test(path)) return 'task'; // per-camera image orientation is set from Task Detail
@@ -85,10 +85,11 @@ function createAuth({ pool, getUsers, getRoles }) {
     return !!(role && role.permissions && role.permissions[key]);
   }
 
-  // Mount on '/api' (and other protected paths). Skips login + health.
+  // Mount on '/api' (and other protected paths). Skips login, health and the device heartbeat.
   async function requireAuth(req, res, next) {
     const p = req.originalUrl.split('?')[0];
-    if (p === '/api/login' || p === '/api/health') return next();
+    // ESP32 heartbeat authenticates with its camera's FTP credentials inside the handler, not a session
+    if (p === '/api/login' || p === '/api/health' || p === '/api/devices/heartbeat') return next();
     try {
       const user = await sessionUser(req);
       if (!user) return res.status(401).json({ success: false, message: 'กรุณาเข้าสู่ระบบ' });

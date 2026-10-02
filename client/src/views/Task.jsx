@@ -40,6 +40,8 @@ export default function Task({
           patchTaskRemote={patchTaskRemote}
           onBack={onBack}
           onDeleted={onBack}
+          onOpenTask={onOpenTask}
+          taskExists={(id) => tasks.some((t) => t.id === id)}
           reloadTasks={reloadTasks}
         />
       )}

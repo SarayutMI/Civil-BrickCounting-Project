@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { key: 'dashboard', icon: 'dash', label: 'Dashboard' },
   { key: 'reports', icon: 'report', label: 'Reports' },
   { key: 'logs', icon: 'logs', label: 'Logs' },
+  { key: 'devices', icon: 'pulse', label: 'Device Monitor' },
   { key: 'settings', icon: 'gear', label: 'Settings' },
 ];
 

@@ -56,11 +56,14 @@ function writeConcat(dir, files, name, perFrameSec) {
   fs.writeFileSync(path.join(dir, name), lines.join('\n'), 'utf-8');
 }
 
-/** @returns Promise<{ frames:number, mp4:string, gif:string }> — rejects with a readable Error */
-async function buildTimelapse(dir) {
+/**
+ * @param skip  file names to leave out (frames the user took out of the count)
+ * @returns Promise<{ frames:number, mp4:string, gif:string }> — rejects with a readable Error
+ */
+async function buildTimelapse(dir, skip = new Set()) {
   let files;
   try {
-    files = fs.readdirSync(dir).filter((f) => FRAME_RE.test(f)).sort();
+    files = fs.readdirSync(dir).filter((f) => FRAME_RE.test(f) && !skip.has(f)).sort();
   } catch (_) {
     throw new Error('ยังไม่มีภาพ snapshot ของ Task นี้');
   }

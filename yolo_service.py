@@ -16,7 +16,7 @@ endpoint POST /api/tasks/:id/detect ซึ่ง proxy มาที่นี่)
 
   pip install -r requirements.txt
   # วาง best.pt ของคุณไว้โฟลเดอร์เดียวกับไฟล์นี้ (หรือกำหนด path ผ่าน env MODEL_PATH)
-  export MODEL_PATH=/path/to/best.pt      # ถ้าไม่ตั้ง จะหาไฟล์ best.pt ในโฟลเดอร์เดียวกัน
+  export MODEL_PATH=/path/to/best.pt      # ถ้าไม่ตั้ง จะหาไฟล์ best-V2-25sep26.pt ในโฟลเดอร์เดียวกัน
   export YOLO_PORT=8000                   # ค่า default คือ 8000
   python yolo_service.py
 
@@ -35,7 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from PIL import Image
 
-MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(os.path.dirname(__file__), "best.pt"))
+MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(os.path.dirname(__file__), "best-V2-25sep26.pt"))
 YOLO_PORT = int(os.environ.get("YOLO_PORT", "8000"))
 DEFAULT_IMG_SIZE = int(os.environ.get("YOLO_IMGSZ", "960"))
 
@@ -106,7 +106,7 @@ class DetectRequest(BaseModel):
         description="จุด ROI แบบ normalized (0..1) ตามลำดับที่วาดไว้ในหน้า UI, ว่างได้ = ทั้งภาพ",
     )
     blocks_per_sqm: float = Field(
-        ..., gt=0, description="อิฐ/บล็อกกี่ก้อน เท่ากับ 1 ตารางเมตร (ตั้งค่าต่อประเภทอิฐใน Settings)"
+        ..., gt=0, description="พื้นที่ (ตร.ม.) ต่ออิฐ/บล็อก 1 ก้อน — area = จำนวนบล็อก × ค่านี้ (ตั้งค่าต่อประเภทอิฐใน Settings; ชื่อ field คงไว้เพื่อความเข้ากันได้)"
     )
     confidence: float = Field(0.5, ge=0.01, le=0.99, description="ค่า confidence threshold ของโมเดล (0-1)")
     class_id: Optional[int] = Field(
@@ -246,7 +246,7 @@ def detect(req: DetectRequest):
                 if inside:
                     blocks_in_roi += 1
 
-    area_m2 = round(blocks_in_roi / req.blocks_per_sqm, 3)
+    area_m2 = round(blocks_in_roi * req.blocks_per_sqm, 3)
 
     return DetectResponse(
         total_detections=len(detections),

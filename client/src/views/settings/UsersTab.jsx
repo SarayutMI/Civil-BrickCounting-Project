@@ -1,8 +1,40 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Icon from '../../icons/Icon.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import { useModal } from '../../components/ModalProvider.jsx';
 import * as api from '../../api.js';
+
+const REVEAL_MS = 5000; // a revealed password hides itself again after this long
+
+// Password input with an eye button that shows the text temporarily (auto-hides after REVEAL_MS).
+function PasswordInput({ value, onChange, placeholder, invalid, autoComplete }) {
+  const [shown, setShown] = useState(false);
+  const timer = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  function toggle() {
+    clearTimeout(timer.current);
+    if (shown) { setShown(false); return; }
+    setShown(true);
+    timer.current = setTimeout(() => setShown(false), REVEAL_MS);
+  }
+
+  return (
+    <div className="pw-field">
+      <input
+        type={shown ? 'text' : 'password'} className={`input${invalid ? ' input-invalid' : ''}`}
+        placeholder={placeholder} value={value} onChange={onChange} autoComplete={autoComplete}
+      />
+      <button
+        type="button" className="pw-toggle" onClick={toggle}
+        title={shown ? 'ซ่อนรหัสผ่าน' : `แสดงรหัสผ่านชั่วคราว (${REVEAL_MS / 1000} วินาที)`}
+        aria-label={shown ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} aria-pressed={shown}
+      >
+        <Icon name={shown ? 'eyeOff' : 'eye'} />
+      </button>
+    </div>
+  );
+}
 
 function UserModalBody({ user, roles, onClose, onSaved }) {
   const toast = useToast();
@@ -11,11 +43,17 @@ function UserModalBody({ user, roles, onClose, onSaved }) {
   const [email, setEmail] = useState(user?.email || '');
   const [username, setUsername] = useState(user?.username || '');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState(user?.role || roles[0]?.name || '');
+  const mismatch = confirmPassword !== '' && confirmPassword !== password;
 
   async function submit() {
     if (!name.trim() || !username.trim() || (!isEdit && !password)) {
       toast('กรุณากรอกชื่อ, username และ password ให้ครบ');
+      return;
+    }
+    if (password && password !== confirmPassword) {
+      toast(confirmPassword ? 'รหัสผ่านและการยืนยันรหัสผ่านไม่ตรงกัน' : 'กรุณายืนยันรหัสผ่าน');
       return;
     }
     if (isEdit) {
@@ -38,7 +76,15 @@ function UserModalBody({ user, roles, onClose, onSaved }) {
         <div className="form-group"><label>ชื่อ-นามสกุล</label><input className="input" placeholder="เช่น สมหญิง ใจงาม" value={name} onChange={(e) => setName(e.target.value)} /></div>
         <div className="form-group"><label>อีเมล</label><input className="input" placeholder="name@company.com" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
         <div className="form-group"><label>Username (สำหรับ login)</label><input className="input" placeholder="เช่น somying" value={username} onChange={(e) => setUsername(e.target.value)} /></div>
-        <div className="form-group"><label>{isEdit ? 'Password (เว้นว่างไว้ถ้าไม่เปลี่ยน)' : 'Password'}</label><input type="password" className="input" placeholder={isEdit ? '••••••••' : 'ตั้งรหัสผ่าน'} value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+        <div className="form-group"><label>{isEdit ? 'Password (เว้นว่างไว้ถ้าไม่เปลี่ยน)' : 'Password'}</label>
+          <PasswordInput autoComplete="new-password" placeholder={isEdit ? '••••••••' : 'ตั้งรหัสผ่าน'} value={password} onChange={(e) => setPassword(e.target.value)} />
+        </div>
+        {(!isEdit || password) && (
+          <div className="form-group"><label>Confirm Password</label>
+            <PasswordInput autoComplete="new-password" placeholder="พิมพ์รหัสผ่านอีกครั้ง" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} invalid={mismatch} />
+            {mismatch && <span className="field-error">รหัสผ่านไม่ตรงกัน</span>}
+          </div>
+        )}
         <div className="form-group"><label>สิทธิ์การใช้งาน (Role)</label>
           <select className="select" value={role} onChange={(e) => setRole(e.target.value)}>
             {roles.map((r) => <option key={r.id} value={r.name}>{r.name}</option>)}

@@ -15,3 +15,9 @@ esp32-cam-bridge/config.h
 # Login accounts + passwords for scripts/seed-users.js — never commit
 seed-users.local.json
 .env
+
+# Claude Code personal settings
+.claude/settings.local.json
+
+# PlatformIO build output (esp32-cam-bridge/platformio.ini)
+esp32-cam-bridge/.pio/

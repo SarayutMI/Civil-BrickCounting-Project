@@ -9,10 +9,11 @@ import Task from './views/Task.jsx';
 import Dashboard from './views/Dashboard.jsx';
 import Reports from './views/Reports.jsx';
 import Logs from './views/Logs.jsx';
+import DeviceMonitor from './views/DeviceMonitor.jsx';
 import Settings from './views/Settings.jsx';
 import * as api from './api.js';
 
-const TITLES = { home: 'Home', task: 'Task', dashboard: 'Dashboard', reports: 'Reports', logs: 'Logs', settings: 'Settings' };
+const TITLES = { home: 'Home', task: 'Task', dashboard: 'Dashboard', reports: 'Reports', logs: 'Logs', devices: 'Device Monitor', settings: 'Settings' };
 function allPermsTrue() {
   return { home: true, task: true, dashboard: true, reports: true, logs: true, settings: true };
 }
@@ -193,8 +194,9 @@ function Shell({ user, onLogout }) {
             />
           )}
           {view === 'dashboard' && <Dashboard tasks={tasks} currentTaskId={currentTaskId} />}
-          {view === 'reports' && <Reports tasks={tasks} workersMaster={workersMaster} />}
+          {view === 'reports' && <Reports tasks={tasks} workersMaster={workersMaster} brickTypes={brickTypes} mergeTask={mergeTask} currentUser={user} />}
           {view === 'logs' && <Logs />}
+          {view === 'devices' && <DeviceMonitor />}
           {view === 'settings' && (
             <Settings
               tab={settingsTab}

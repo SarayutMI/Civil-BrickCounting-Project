@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import Icon from '../icons/Icon.jsx';
 import BentoItem from '../components/BentoItem.jsx';
+import { TaskProductivityCard } from '../components/ProductivityReport.jsx';
+import LabelEditor from '../components/LabelEditor.jsx';
 import RoiCanvas from '../components/RoiCanvas.jsx';
 import BBoxCanvas from '../components/BBoxCanvas.jsx';
 import CameraStage, { IDENTITY_VIEW, normalizeView, sameView } from '../components/CameraStage.jsx';
@@ -31,7 +33,7 @@ function historyFromParam(period) {
    the 2s poll never clobbers an in-progress edit — same split as the
    original (paintTaskDetail vs refreshTaskLiveFields).
 =================================================================== */
-export default function TaskDetail({ taskId, task, brickTypes, workersMaster, cameras, reloadCameras, mergeTask, patchTaskRemote, onBack, onDeleted, reloadTasks }) {
+export default function TaskDetail({ taskId, task, brickTypes, workersMaster, cameras, reloadCameras, mergeTask, patchTaskRemote, onBack, onDeleted, onOpenTask, taskExists, reloadTasks }) {
   const toast = useToast();
 
   // ---- Form state (seeded once per taskId; not touched by polling) ----
@@ -50,9 +52,10 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   const [ftpFrameUrl, setFtpFrameUrl] = useState(null);
   const [timelapseError, setTimelapseError] = useState(false);
   const [natural, setNatural] = useState(null); // {w,h} of the raw camera frame, learned from the <img> once it loads
-  const [viewDraft, setViewDraft] = useState(IDENTITY_VIEW); // rotate/flip/zoom being edited (saved per camera)
+  const [viewDraft, setViewDraft] = useState(IDENTITY_VIEW); // rotate/flip/perspective/straighten/zoom being edited (saved per camera)
 
   const [historyPeriod, setHistoryPeriod] = useState('today');
+  const [labeling, setLabeling] = useState(false); // Human-in-the-loop label review screen
   const [historyList, setHistoryList] = useState([]);
 
 
@@ -67,7 +70,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
     setConfidence(task.confidence);
     setSnapshotInterval(task.snapshotInterval || 30);
     setRoiPoints((task.roi || []).map((p) => [...p]));
-    const auto = task.cameraId || (cameras.find((c) => c.zone && task.zone && c.zone.toLowerCase() === task.zone.toLowerCase())?.id) || '';
+    const auto = task.copyOf ? '' : task.cameraId || (cameras.find((c) => c.zone && task.zone && c.zone.toLowerCase() === task.zone.toLowerCase())?.id) || '';
     setSelectedCameraId(auto);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
@@ -80,6 +83,18 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
     }, 2000);
     return () => clearInterval(id);
   }, [taskId, mergeTask]);
+
+  // ---- Work time + PD: GET /api/tasks/:id/productivity every 60s ----
+  const [prod, setProd] = useState(null);
+  const [prodKey, setProdKey] = useState(0); // bump to reload now (e.g. after switching result source)
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => api.getTaskProductivity(taskId).then((p) => { if (!cancelled) setProd(p); });
+    load();
+    const id = setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [taskId, prodKey]);
+  useEffect(() => { setProd(null); }, [taskId]);
 
   // ---- History polling: GET /api/tasks/:id/history every 15s + on period change ----
   useEffect(() => {
@@ -230,6 +245,17 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
     if (ok) mergeTask({ ...task, timelapseStatus: 'building' });
   }
 
+  async function clearTaskData() {
+    const typed = window.prompt(`ล้างข้อมูลของ "${task.name}"?\nจะลบประวัติ ภาพ Label ที่ตรวจแก้ และไทม์แลปส์ของงานนี้ทั้งหมด แล้วรีเซ็ตพื้นที่/บล็อกเป็น 0 (ค่าตั้งของงานยังอยู่) — ย้อนกลับไม่ได้\n\nพิมพ์ชื่องานเพื่อยืนยัน:`);
+    if (typed === null) return;
+    const { ok, data } = await api.clearTaskData(task.id, typed);
+    if (!ok) return toast(data.message || 'ล้างข้อมูลไม่สำเร็จ');
+    toast(`ล้างข้อมูลแล้ว (ประวัติ ${data.clearedRows} แถว)`, 'success');
+    mergeTask(data);
+    setProdKey((k) => k + 1);
+    await reloadTasks();
+  }
+
   async function deleteTaskItem() {
     if (!window.confirm('ยืนยันลบ Task นี้? การลบไม่สามารถย้อนกลับได้')) return;
     const { ok, data } = await api.deleteTask(task.id);
@@ -250,20 +276,38 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
 
   const historyRows = historyList.slice().reverse();
 
+  if (labeling) return <LabelEditor task={task} onClose={() => { setLabeling(false); setProdKey((k) => k + 1); }} onSourceChanged={(src) => mergeTask({ ...task, resultSource: src })}
+    onTaskChanged={(nums) => mergeTask({ ...task, ...nums })} />;
+
   return (
     <div id="view-task-detail" className="view active">
       <div className="detail-back"><button className="btn btn-secondary" onClick={onBack}>← กลับ Tasks</button></div>
       <div className="section-head">
         <div><h2>Task Detail</h2><p><CameraBadge status={task.cameraStatus} /> <StatusBadge status={task.status} /> <span>อัปเดตล่าสุด {task.lastUpdate}</span></p></div>
+        <button className={`btn ${task.status === 'finished' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setLabeling(true)}
+          title="ตรวจแก้กรอบของ AI ในภาพที่บันทึกไว้ — ลบที่ทายผิด ตีกรอบอิฐที่ AI พลาด แล้วสรุปจำนวนใหม่">
+          <Icon name="edit" /> ตรวจแก้ Label (Human-in-the-loop)
+        </button>
       </div>
+
+      {task.copyOf && (
+        <div className="copy-banner">
+          <strong>งานสำเนา</strong> คัดลอกจาก "{task.copyOfName || 'งานต้นฉบับ'}" — ไว้ลองแก้ / ลองปรับ ไม่กระทบงานต้นฉบับ ·
+          ไม่ผูกกล้อง ไม่เริ่ม/พักอัตโนมัติ และไม่นับรวมใน Productivity ทั้งโครงการ
+          {taskExists(task.copyOf) && <button className="btn btn-ghost btn-sm" onClick={() => onOpenTask(task.copyOf)}>เปิดงานต้นฉบับ</button>}
+        </div>
+      )}
 
       <div id="tdBento" className="bento" style={{ marginBottom: 18 }}>
         <BentoItem icon={<Icon name="users" />} label="แรงงานที่มอบหมาย" value={task.workers.length + ' คน'} bg="var(--accent-tint)" fg="var(--accent)" />
         <BentoItem icon={<Icon name="users" />} label="คนที่ตรวจพบ (AI Real-time)" value={(task.peopleDetected || 0) + ' คน'} bg="var(--purple-tint)" fg="var(--purple)" />
         <BentoItem icon={<Icon name="area" />} label="พื้นที่ที่ตรวจจับได้" value={task.area + ' m²'} bg="var(--green-tint)" fg="var(--green)" />
         <BentoItem icon={<Icon name="percent" />} label="อัตราความสำเร็จ" value={pct(task.area, task.expectedArea) + '%'} bg="var(--amber-tint)" fg="var(--amber)" />
-        <BentoItem icon={<Icon name="block" />} label="จำนวนบล็อกทั้งหมด" value={task.blocks.toLocaleString() + (ratio ? ` (÷${ratio}/m²)` : '')} bg="var(--gray-tint)" fg="var(--muted)" />
+        <BentoItem icon={<Icon name="block" />} label="จำนวนบล็อกทั้งหมด" value={task.blocks.toLocaleString() + (ratio ? ` (×${ratio} m²)` : '')} bg="var(--gray-tint)" fg="var(--muted)" />
       </div>
+
+      <TaskProductivityCard prod={prod} workerNames={task.workers.map((w) => workerName(workersMaster, w))}
+        onSourceChanged={(src) => { mergeTask({ ...task, resultSource: src }); setProdKey((k) => k + 1); }} />
 
       <div className="detail-grid">
         <div className="card">
@@ -278,7 +322,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
           </div>
           <div className="card-body">
             <div className="action-row" style={{ alignItems: 'center', marginBottom: 12, gap: 10 }}>
-              <select className="input" style={{ maxWidth: 280 }} value={selectedCameraId} onChange={(e) => setTaskCamera(e.target.value)}>
+              <select className="input" style={{ maxWidth: 280 }} value={selectedCameraId} onChange={(e) => setTaskCamera(e.target.value)} disabled={!!task.copyOf} title={task.copyOf ? 'งานสำเนาผูกกล้องไม่ได้' : undefined}>
                 <option value="">— ไม่เลือกกล้อง —</option>
                 {cameras.map((c) => <option key={c.id} value={c.id}>{c.name}{c.zone ? ' — ' + c.zone : ''}</option>)}
               </select>
@@ -292,6 +336,18 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
                 <button className="btn btn-secondary btn-sm" onClick={() => patchView({ rotate: (viewDraft.rotate + 90) % 360 })} title="หมุนขวา 90°">↻ 90°</button>
                 <button className="btn btn-secondary btn-sm" aria-pressed={viewDraft.flipH} onClick={() => patchView({ flipH: !viewDraft.flipH })}>⇄ พลิกซ้าย-ขวา</button>
                 <button className="btn btn-secondary btn-sm" aria-pressed={viewDraft.flipV} onClick={() => patchView({ flipV: !viewDraft.flipV })}>⇅ พลิกบน-ล่าง</button>
+                <label title="Roll / Straighten — หมุนละเอียดให้ภาพตั้งตรง (ขอบดำถูกครอปออกอัตโนมัติ)">Straighten
+                  <input type="range" min="-45" max="45" step="0.1" value={viewDraft.straighten} onChange={(e) => patchView({ straighten: Math.round(Number(e.target.value) * 10) / 10 })} onDoubleClick={() => patchView({ straighten: 0 })} />
+                  <span className="text-mono">{viewDraft.straighten.toFixed(1)}°</span>
+                </label>
+                <label title="Vertical perspective — ค่าบวกแก้ผนัง/เสาที่เอียงเข้าหากันด้านบน ค่าลบแก้ด้านล่าง">Vertical
+                  <input type="range" min="-100" max="100" step="1" value={viewDraft.vertical} onChange={(e) => patchView({ vertical: Number(e.target.value) })} onDoubleClick={() => patchView({ vertical: 0 })} />
+                  <span className="text-mono">{viewDraft.vertical}</span>
+                </label>
+                <label title="Horizontal perspective — ค่าบวกดึงขอบซ้ายเข้า ค่าลบดึงขอบขวาเข้า (แก้ภาพที่ถ่ายเฉียง)">Horizontal
+                  <input type="range" min="-100" max="100" step="1" value={viewDraft.horizontal} onChange={(e) => patchView({ horizontal: Number(e.target.value) })} onDoubleClick={() => patchView({ horizontal: 0 })} />
+                  <span className="text-mono">{viewDraft.horizontal}</span>
+                </label>
                 <label>ซูม
                   <input type="range" min="1" max="5" step="0.1" value={viewDraft.zoom} onChange={(e) => patchView({ zoom: Math.round(Number(e.target.value) * 10) / 10 })} />
                   <span className="text-mono">{viewDraft.zoom.toFixed(1)}×</span>
@@ -357,7 +413,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
               <div className="form-group"><label>Zone</label><input className="input" value={zone} onChange={(e) => setZone(e.target.value)} /></div>
               <div className="form-group"><label>ประเภทอิฐ (Profile)</label>
                 <select className="select" value={brickType} onChange={(e) => setBrickType(e.target.value)}>
-                  {brickTypes.map((b) => <option key={b.id} value={b.id}>{b.name} — {b.blocksPerSqm} ก้อน/ตร.ม.</option>)}
+                  {brickTypes.map((b) => <option key={b.id} value={b.id}>{b.name} — {b.blocksPerSqm} ตร.ม./ก้อน</option>)}
                 </select>
               </div>
               <div className="form-group"><label>เป้าหมายพื้นที่ (ตร.ม.)</label><input type="number" min="1" step="1" className="input" value={expectedArea} onChange={(e) => setExpectedArea(e.target.value)} /></div>
@@ -401,7 +457,9 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
               <button className="btn btn-secondary" disabled={task.status !== 'running'} onClick={() => setTaskStatus('pause')}>พัก</button>
               <button className="btn btn-secondary" disabled={task.status === 'finished'} onClick={() => setTaskStatus('finished')}>หยุด</button>
               <button className="btn btn-secondary" onClick={saveTaskInfo}>บันทึก</button>
-              <button className="btn btn-danger" style={{ marginLeft: 'auto' }} onClick={deleteTaskItem}>ลบ Task</button>
+              <button className="btn btn-danger-outline" style={{ marginLeft: 'auto' }} disabled={task.status === 'running'} onClick={clearTaskData}
+                title={task.status === 'running' ? 'หยุดหรือพักงานก่อน แล้วค่อยล้างข้อมูล' : 'ลบประวัติ ภาพ และ Label ของงานนี้ — ค่าตั้งของงานยังอยู่'}>Clear Data</button>
+              <button className="btn btn-danger" onClick={deleteTaskItem}>ลบ Task</button>
             </div>
           </div>
         </div>

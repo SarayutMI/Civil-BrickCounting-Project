@@ -68,6 +68,23 @@ function AddTaskModalBody({ brickTypes, cameras, onClose, onCreated }) {
 
 export default function TaskList({ tasks, brickTypes, cameras, filter, setFilter, search, setSearch, onOpenTask, reloadTasks }) {
   const modal = useModal();
+  const toast = useToast();
+  const [copying, setCopying] = useState(null); // id of the task being duplicated
+
+  // Copy settings + history (images, AI boxes, human labels) + report; the copy has no camera.
+  async function duplicate(t) {
+    const newName = window.prompt('ชื่องานสำเนา (คัดลอกค่าตั้ง + ประวัติภาพ + Label + Report — ไม่ผูกกล้อง)', `${t.name} (สำเนา)`);
+    if (newName === null) return;
+    setCopying(t.id);
+    try {
+      const { ok, data } = await api.duplicateTask(t.id, newName);
+      if (!ok) { toast(data.message || 'คัดลอก Task ไม่สำเร็จ'); return; }
+      toast(`คัดลอกแล้ว: "${data.name}" — ประวัติ ${data.historyRows} แถว`, 'success');
+      await reloadTasks();
+    } finally {
+      setCopying(null);
+    }
+  }
 
   const rows = tasks.filter((t) => {
     const okStatus = filter === 'all' || t.status === filter;
@@ -112,7 +129,7 @@ export default function TaskList({ tasks, brickTypes, cameras, filter, setFilter
                 <tr><td colSpan={7}><div className="empty-state"><Icon name="empty" /><div className="e-title">ไม่พบ Task</div><div className="e-desc">ลองเปลี่ยนคำค้นหาหรือตัวกรอง</div></div></td></tr>
               ) : rows.map((t) => (
                 <tr className="clickable" key={t.id} onClick={() => onOpenTask(t.id)}>
-                  <td className="cell-strong">{t.name}</td>
+                  <td className="cell-strong">{t.name}{t.copyOf && <span className="copy-badge" title={`คัดลอกจาก "${t.copyOfName || ''}"`}>สำเนา</span>}</td>
                   <td className="cell-muted">{t.zone}</td>
                   <td className="cell-muted">{brickName(brickTypes, t.brickType)}</td>
                   <td className="cell-muted">{t.workers.length} คน</td>
@@ -121,7 +138,15 @@ export default function TaskList({ tasks, brickTypes, cameras, filter, setFilter
                     <div className="cell-muted" style={{ fontSize: 11.5, marginTop: 4 }}>{pct(t.area, t.expectedArea)}% · {t.area}/{t.expectedArea} m²</div>
                   </td>
                   <td><StatusBadge status={t.status} /></td>
-                  <td><button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); onOpenTask(t.id); }}>ดูรายละเอียด</button></td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); onOpenTask(t.id); }}>ดูรายละเอียด</button>
+                      <button className="btn btn-secondary btn-sm btn-icon" disabled={copying === t.id} onClick={(e) => { e.stopPropagation(); duplicate(t); }}
+                        aria-label="Duplicate" title={copying === t.id ? 'กำลังคัดลอก…' : 'Duplicate — สร้างงานสำเนาไว้ลองแก้ / ลองปรับ (คัดลอกค่าตั้ง ประวัติภาพ Label และ Report, ไม่ผูกกล้อง)'}>
+                        <Icon name="copy" />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
