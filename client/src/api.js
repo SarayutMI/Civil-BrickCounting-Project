@@ -135,6 +135,14 @@ export async function saveLabelFrame(taskId, frameId, body) {
   const data = await asJson(res);
   return { ok: res.ok, data };
 }
+// ทำเครื่องหมายตรวจแล้ว (ใช้ผล AI ตามเดิม) — ids = ภาพที่เลือก, ไม่ส่ง = ทุกภาพที่ยังไม่ตรวจ
+export async function markLabelFramesReviewed(taskId, ids) {
+  const res = await fetch(`/api/tasks/${taskId}/label-frames/mark-reviewed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids ? { ids } : {}),
+  });
+  const data = await asJson(res);
+  return { ok: res.ok, data };
+}
 // ตัดภาพออกจากการนับ (excluded: true, reason) หรือกู้คืน (excluded: false) — หลายภาพพร้อมกันได้
 export async function excludeLabelFrames(taskId, ids, excluded, reason) {
   const res = await fetch(`/api/tasks/${taskId}/label-frames/exclude`, {

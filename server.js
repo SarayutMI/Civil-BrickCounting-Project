@@ -1147,6 +1147,38 @@ app.post('/api/tasks/:id/label-frames/apply-roi', async (req, res) => {
   }
 });
 
+// ทำเครื่องหมาย "ตรวจแล้ว" โดยไม่แก้กรอบ (ยอมรับผลของ AI ตามเดิม) ให้หลายภาพพร้อมกัน — ไม่ต้องกดบันทึกทีละภาพ
+// body: { ids?: ['123', ...] } — ไม่ส่ง ids = ทุกภาพที่ยังไม่ตรวจ (ข้ามภาพที่ตรวจแล้ว และภาพที่ตัดออกจากการนับ)
+app.post('/api/tasks/:id/label-frames/mark-reviewed', async (req, res) => {
+  const t = findTask(req.params.id);
+  if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
+  const ids = req.body && Array.isArray(req.body.ids) ? [...new Set(req.body.ids.map(String))] : null;
+  if (ids && (!ids.length || ids.length > EXCLUDE_MAX_IDS || !ids.every((id) => /^\d+$/.test(id)))) {
+    return res.status(400).json({ success: false, message: 'เลือกภาพที่จะทำเครื่องหมายก่อน' });
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, at, blocks, area, people_detected, snapshot, detections, human_labels, corrected_blocks, corrected_people FROM task_history
+        WHERE task_id = $1 AND snapshot IS NOT NULL AND excluded_at IS NULL AND corrected_blocks IS NULL
+          AND ($2::bigint[] IS NULL OR id = ANY($2::bigint[]))
+        ORDER BY at`,
+      [t.id, ids]
+    );
+    const frames = [];
+    for (const r of rows) {
+      const c = await saveFrameLabels(r, t, {}, req.user.username);
+      frames.push({ id: String(r.id), correctedBlocks: c.corrected, correctedPeople: c.correctedPeople });
+    }
+    if (frames.length) {
+      await useHumanResult(t, req.user.username);
+      audit('edit', 'info', `ตรวจแก้ Label Task "${t.name}": ทำเครื่องหมายตรวจแล้ว ${frames.length} ภาพ (ใช้ผลของ AI ตามเดิม)`, req.user.username);
+    }
+    res.json({ success: true, frames, resultSource: t.resultSource || 'ai' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: 'ทำเครื่องหมายตรวจแล้วไม่สำเร็จ', raw: err.message });
+  }
+});
+
 app.put('/api/tasks/:id/label-frames/:hid', async (req, res) => {
   const t = findTask(req.params.id);
   if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });

@@ -180,6 +180,7 @@ export default function LabelEditor({ task, onClose, onSourceChanged, onTaskChan
   const shown = useMemo(() => (frames || []).filter((f) => (filter === 'excluded' ? f.excluded
     : filter === 'todo' ? !f.excluded && f.correctedBlocks === null : filter === 'done' ? !f.excluded && f.correctedBlocks !== null : true)), [frames, filter]);
   const excludedCount = useMemo(() => (frames || []).filter((f) => f.excluded).length, [frames]);
+  const todoCount = useMemo(() => (frames || []).filter((f) => !f.excluded && f.correctedBlocks === null).length, [frames]);
   const idx = frames ? frames.findIndex((f) => f.id === curId) : -1;
 
   function go(delta) {
@@ -231,6 +232,23 @@ export default function LabelEditor({ task, onClose, onSourceChanged, onTaskChan
     setPicked(new Set());
     if (data.task && onTaskChanged) onTaskChanged(data.task);
     toast(excluded ? `ตัดออกจากการนับแล้ว ${changed.size} ภาพ` : `กู้คืนแล้ว ${changed.size} ภาพ`, 'success');
+  }
+  // accept the AI result as-is on many frames at once (ids = ticked frames, none = every frame not reviewed yet)
+  async function markReviewed(ids) {
+    if (excluding) return;
+    const todo = (frames || []).filter((f) => !f.excluded && f.correctedBlocks === null && (!ids || ids.includes(f.id)));
+    if (!todo.length) { toast(ids ? 'ภาพที่เลือกตรวจแล้วทั้งหมด (หรือถูกตัดออก)' : 'ไม่มีภาพที่ยังไม่ตรวจ'); return; }
+    if (!window.confirm(`ทำเครื่องหมาย "ตรวจแล้ว" ${todo.length} ภาพ${ids ? 'ที่เลือก' : 'ที่ยังไม่ตรวจ'}?\n\nใช้ผลที่ AI นับตามเดิม (ไม่แก้กรอบ) — ภาพที่ตรวจแล้ว / ถูกตัดออก จะไม่ถูกแตะ\nแก้ทีละภาพภายหลังได้ตามปกติ`)) return;
+    setExcluding(true);
+    const { ok, data } = await api.markLabelFramesReviewed(task.id, ids ? todo.map((f) => f.id) : undefined);
+    setExcluding(false);
+    if (!ok) { toast((data && data.message) || 'ทำเครื่องหมายตรวจแล้วไม่สำเร็จ'); return; }
+    const done = new Map(data.frames.map((f) => [f.id, f]));
+    setFrames((list) => list.map((f) => (done.has(f.id) ? { ...f, ...done.get(f.id) } : f)));
+    if (done.has(curId) && !dirty) api.getLabelFrame(task.id, curId).then((f) => f && setFrame(f));
+    setPicked(new Set());
+    if (data.frames.length && onSourceChanged) onSourceChanged(data.resultSource);
+    toast(`ทำเครื่องหมายตรวจแล้ว ${data.frames.length} ภาพ`, 'success');
   }
   // this frame and every frame after it — the usual case: the camera was moved / taken down at the end
   const fromHereIds = () => (idx < 0 ? [] : frames.slice(idx).filter((f) => !f.excluded).map((f) => f.id));
@@ -596,6 +614,8 @@ export default function LabelEditor({ task, onClose, onSourceChanged, onTaskChan
         <div className="le-grid">
           <div className="card le-list">
             <div className="le-filters">{FILTERS.map(([k, l]) => <button key={k} className={`tl-seg${filter === k ? ' active' : ''}`} onClick={() => setFilter(k)}>{l}{k === 'excluded' && excludedCount ? ` ${excludedCount}` : ''}</button>)}</div>
+            <button className="btn btn-secondary btn-sm le-markall" disabled={excluding || !todoCount} onClick={() => markReviewed()}
+              title="ใช้ผลที่ AI นับตามเดิมกับทุกภาพที่ยังไม่ตรวจ — ไม่ต้องกดบันทึกทีละภาพ">✓ ตรวจแล้วทั้งหมด{todoCount ? ` (${todoCount} ภาพ)` : ''}</button>
             <div className="le-items">
               {[...shown].reverse().map((f) => (
                 <div key={f.id} role="button" tabIndex={0} className={`le-item${f.id === curId ? ' active' : ''}${f.excluded ? ' excluded' : ''}${picked.has(f.id) ? ' picked' : ''}`} onClick={() => open(f.id)}
@@ -620,6 +640,7 @@ export default function LabelEditor({ task, onClose, onSourceChanged, onTaskChan
                 <div className="le-bulk-btns">
                   <button className="btn btn-danger btn-sm" disabled={excluding} onClick={() => setExcluded([...picked], true)}>⊘ ตัดออกจากการนับ</button>
                   <button className="btn btn-secondary btn-sm" disabled={excluding} onClick={() => setExcluded([...picked], false)}>↺ กู้คืน</button>
+                  <button className="btn btn-secondary btn-sm" disabled={excluding} onClick={() => markReviewed([...picked])}>✓ ตรวจแล้ว</button>
                 </div>
               </div>
             )}
