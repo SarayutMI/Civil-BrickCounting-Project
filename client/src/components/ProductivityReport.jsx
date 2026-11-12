@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
+import TaskLockControl from './TaskLockControl.jsx';
 import { StatusBadge } from '../utils.jsx';
 import * as api from '../api.js';
 import { productivitySteps, projectSteps, stdLabel, BAND_TEXT } from '../productivitySteps.js';
@@ -47,12 +48,12 @@ export function ProductivitySteps({ steps }) {
 /* The task's two result sets: option 1 = AI as detected, option 2 = after the human-in-the-loop
    review. The AI numbers are never overwritten, so switching back is always possible.
    `available` = at least one frame has been reviewed. onChanged(source) lets the page refresh. */
-export function ResultSourceToggle({ taskId, value, available, humanLatest, aiBlocks, onChanged, compact }) {
+export function ResultSourceToggle({ taskId, value, available, humanLatest, aiBlocks, onChanged, compact, readOnly = false }) {
   const [cur, setCur] = useState(value || 'ai');
   const [busy, setBusy] = useState(false);
   useEffect(() => { setCur(value || 'ai'); }, [value]);
   async function pick(src) {
-    if (src === cur || busy) return;
+    if (src === cur || busy || readOnly) return;
     setBusy(true);
     const { ok } = await api.patchTask(taskId, { resultSource: src });
     setBusy(false);
@@ -62,9 +63,9 @@ export function ResultSourceToggle({ taskId, value, available, humanLatest, aiBl
     <div className={`rs-toggle${compact ? ' compact' : ''}`}>
       {!compact && <span className="rs-label">ผลลัพธ์ที่ใช้:</span>}
       <div className="tabs" role="radiogroup" aria-label="ผลลัพธ์ที่ใช้ของงานนี้">
-        <button role="radio" aria-checked={cur === 'ai'} className={`tab-btn${cur === 'ai' ? ' active' : ''}`} disabled={busy} onClick={() => pick('ai')}
+        <button role="radio" aria-checked={cur === 'ai'} className={`tab-btn${cur === 'ai' ? ' active' : ''}`} disabled={busy || readOnly} onClick={() => pick('ai')}
           title="ใช้จำนวนที่ AI นับได้ (ต้นฉบับ)">① ผล AI{aiBlocks !== undefined && aiBlocks !== null ? ` · ${aiBlocks} บล็อก` : ''}</button>
-        <button role="radio" aria-checked={cur === 'human'} className={`tab-btn rs-human${cur === 'human' ? ' active' : ''}`} disabled={busy || !available} onClick={() => pick('human')}
+        <button role="radio" aria-checked={cur === 'human'} className={`tab-btn rs-human${cur === 'human' ? ' active' : ''}`} disabled={busy || readOnly || !available} onClick={() => pick('human')}
           title={available ? 'ใช้จำนวนหลังคนตรวจแก้ (Human-in-the-loop)' : 'ยังไม่มีภาพที่ตรวจแก้ — เข้า "ตรวจแก้ Label" ในหน้า Task ก่อน'}>
           ② ผลตรวจแก้ (HITL){humanLatest ? ` · ${humanLatest.blocks} บล็อก` : ''}
         </button>
@@ -75,13 +76,13 @@ export function ResultSourceToggle({ taskId, value, available, humanLatest, aiBl
 
 /* Work time + PD for one task (Task Detail page): the same numbers and working as the Reports tab.
    workerNames: display names for step 2; showSteps: open the detailed working by default. */
-export function TaskProductivityCard({ prod, workerNames = [], showSteps = false, onSourceChanged }) {
+export function TaskProductivityCard({ prod, workerNames = [], showSteps = false, onSourceChanged, readOnly = false }) {
   if (!prod) return null;
   return (
     <div className="card" style={{ marginBottom: 18 }}>
       <div className="card-head">
         <h3>เวลาทำงาน และ Productivity (PD)</h3>
-        <ResultSourceToggle taskId={prod.taskId} value={prod.selectedSource} available={!!prod.humanLatest} humanLatest={prod.humanLatest} aiBlocks={prod.aiBlocks} onChanged={onSourceChanged} />
+        <ResultSourceToggle readOnly={readOnly} taskId={prod.taskId} value={prod.selectedSource} available={!!prod.humanLatest} humanLatest={prod.humanLatest} aiBlocks={prod.aiBlocks} onChanged={onSourceChanged} />
       </div>
       <div className="card-body">
         <div className="prod-kpis" style={{ marginBottom: 12 }}>
@@ -130,7 +131,7 @@ export function FormulaBox() {
   );
 }
 
-export default function ProductivityReport({ report, workerNamesOf = () => [] }) {
+export default function ProductivityReport({ report, showProjectSummary = true, lockTasks = [], currentUser, onTaskChanged, workerNamesOf = () => [] }) {
   const [openRow, setOpenRow] = useState(null);
   if (!report) return <div className="card"><div className="card-body cell-muted" style={{ padding: 40, textAlign: 'center' }}>กำลังคำนวณ Productivity...</div></div>;
   const { project, tasks } = report;
@@ -143,6 +144,7 @@ export default function ProductivityReport({ report, workerNamesOf = () => [] })
         <div className="card-body"><FormulaBox /></div>
       </div>
 
+      {showProjectSummary && <>
       <div className="prod-kpis">
         <div className="prod-kpi"><span>Productivity จริง (ทั้งโครงการ)</span><strong>{fmt(project.pActual)}</strong><small>ตร.ม./คน-วัน</small></div>
         <div className="prod-kpi"><span>P มาตรฐาน (ถ่วงน้ำหนักตามคน-วัน)</span><strong>{fmt(project.pStd)}</strong><small>ตร.ม./คน-วัน</small></div>
@@ -154,6 +156,8 @@ export default function ProductivityReport({ report, workerNamesOf = () => [] })
         <div className="card-head"><h3>การคำนวณทั้งโครงการ (ทีละขั้น)</h3></div>
         <div className="card-body"><ProductivitySteps steps={projectSteps(project, tasks)} /></div>
       </div>
+
+      </>}
 
       <div className="card">
         <div className="card-head">
@@ -176,6 +180,7 @@ export default function ProductivityReport({ report, workerNamesOf = () => [] })
                 <tr className="clickable" onClick={() => setOpenRow(openRow === r.taskId ? null : r.taskId)} title="กดเพื่อดูการคำนวณโดยละเอียด">
                   <td>
                     <div className="cell-strong">{r.name}</div>
+                    <TaskLockControl task={lockTasks.find((t) => t.id === r.taskId)} currentUser={currentUser} onChanged={onTaskChanged} />
                     <div className="prod-working">{r.brickType || 'ไม่ระบุประเภทอิฐ'} · {tWorking(r)}</div>
                     <div className="prod-working">{pWorking(r)}</div>
                   </td>

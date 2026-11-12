@@ -13,11 +13,19 @@ window.fetch = async (input, init) => {
   if (res.status === 401 && url.startsWith('/api/') && url !== '/api/login' && url !== '/api/me') {
     window.dispatchEvent(new Event('civil:unauthorized'));
   }
+  if (res.status === 423) window.dispatchEvent(new Event('civil:tasks-changed'));
   return res;
 };
 
 async function asJson(res) {
   try { return await res.json(); } catch (_) { return {}; }
+}
+
+export async function setTaskLock(id, locked) {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/lock`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locked }),
+  });
+  return { ok: res.ok, data: await asJson(res) };
 }
 
 /* ---------------- AUTH ---------------- */

@@ -74,7 +74,10 @@ function Shell({ user, onLogout }) {
   const [roles, setRoles] = useState([]);
   const [cameras, setCameras] = useState([]);
 
-  const reloadTasks = useCallback(async () => setTasks(await api.getTasks()), []);
+  const reloadTasks = useCallback(async () => {
+    const fresh = await api.getTasks();
+    if (Array.isArray(fresh)) setTasks(fresh);
+  }, []);
   const reloadBrickTypes = useCallback(async () => setBrickTypes(await api.getBrickTypes()), []);
   const reloadWorkers = useCallback(async () => setWorkersMaster(await api.getWorkers()), []);
   const reloadUsers = useCallback(async () => setUsers(await api.getUsers()), []);
@@ -101,6 +104,37 @@ function Shell({ user, onLogout }) {
     reloadTasks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Locks changed in another page/tab must also disable any open editors.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const fresh = await api.getTasks();
+        if (cancelled || !Array.isArray(fresh)) return;
+        const byId = new Map(fresh.map((task) => [task.id, task]));
+        setTasks((list) => {
+          let changed = false;
+          const next = list.map((task) => {
+            const remote = byId.get(task.id);
+            if (!remote || (!!task.locked === !!remote.locked && task.lockedAt === remote.lockedAt && task.lockedBy === remote.lockedBy)) return task;
+            changed = true;
+            return { ...task, locked: !!remote.locked, lockedAt: remote.lockedAt, lockedBy: remote.lockedBy };
+          });
+          return changed ? next : list;
+        });
+      } catch (_) { /* retain current data while offline */ }
+    };
+    const timer = setInterval(refresh, 5000);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('civil:tasks-changed', refresh);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('civil:tasks-changed', refresh);
+    };
+  }, [reloadTasks]);
 
   // ---- permissions (ported from applyPermissionGate) ----
   const permissions = useMemo(() => {
@@ -175,6 +209,7 @@ function Shell({ user, onLogout }) {
           )}
           {view === 'task' && (
             <Task
+              currentUser={user}
               taskSubView={taskSubView}
               currentTaskId={currentTaskId}
               onOpenTask={openTaskDetail}

@@ -28,8 +28,12 @@ function periodRangeForTab(tab) {
    drives the visible table (rather than scraping the DOM like the
    original did) — the exported content is identical to what's on screen.
 =================================================================== */
-export default function Reports({ tasks, workersMaster, brickTypes, mergeTask, currentUser }) {
+export default function Reports({ tasks: allTasks, workersMaster, brickTypes, mergeTask, currentUser }) {
   const toast = useToast();
+  const [dataTab, setDataTab] = useState('actual');
+  const tasks = useMemo(() => allTasks.filter((t) => dataTab === 'copies' ? !!t.copyOf : !t.copyOf), [allTasks, dataTab]);
+  const actualCount = allTasks.filter((t) => !t.copyOf).length;
+  const copyCount = allTasks.length - actualCount;
   const [view, setView] = useState('tasks'); // 'tasks' = one row per task (landing) | 'project' = whole-project tabs
   const [openTaskId, setOpenTaskId] = useState(null); // task whose own report is open
   const [tab, setTab] = useState('productivity');
@@ -45,6 +49,12 @@ export default function Reports({ tasks, workersMaster, brickTypes, mergeTask, c
     api.getProductivityReport().then((r) => { if (!cancelled) setProdReport(r || { tasks: [], project: {} }); });
     return () => { cancelled = true; };
   }, [needProd, taskKey]);
+
+  const visibleProdReport = useMemo(() => {
+    if (!prodReport) return null;
+    const ids = new Set(tasks.map((t) => t.id));
+    return { ...prodReport, tasks: prodReport.tasks.filter((r) => ids.has(r.taskId)) };
+  }, [prodReport, tasks]);
 
   const totalBlocks = tasks.reduce((s, t) => s + (t.blocks || 0), 0);
   const totalArea = tasks.reduce((s, t) => s + (t.area || 0), 0);
@@ -118,11 +128,11 @@ export default function Reports({ tasks, workersMaster, brickTypes, mergeTask, c
     : { title: 'รายละเอียดตามงาน', headers: byTaskHeaders, rows: byTaskRows.map((r) => r.cells) };
 
   function currentReportRows() {
-    if (tab === 'productivity' && prodReport) {
+    if (tab === 'productivity' && visibleProdReport) {
       const n = (v, d = 2) => (v === null || v === undefined ? '' : Number(v).toFixed(d));
       return {
         headers: ['งาน', 'ประเภทอิฐ', 'Q (ตร.ม.)', 'N (คน)', 'T (วัน)', 'นาทีทำงานจริง', 'นาทีทำงานต่อวัน', 'P จริง (ตร.ม./คน-วัน)', 'P มาตรฐาน', '% ความแตกต่าง', 'Duration มาตรฐาน (วัน)', 'Duration คาดการณ์ (วัน)', 'คงเหลือ (วัน)'],
-        rows: prodReport.tasks.map((r) => [r.name, r.brickType || '', n(r.Q), r.N, n(r.T, 3), r.runMinutes, r.dayMinutes, n(r.pActual, 3), n(r.pStd, 3), n(r.diffPct, 1), n(r.durationStd), n(r.durationForecast), n(r.remainingDays)]),
+        rows: visibleProdReport.tasks.map((r) => [r.name, r.brickType || '', n(r.Q), r.N, n(r.T, 3), r.runMinutes, r.dayMinutes, n(r.pActual, 3), n(r.pStd, 3), n(r.diffPct, 1), n(r.durationStd), n(r.durationForecast), n(r.remainingDays)]),
       };
     }
     return { headers: activeTable.headers, rows: activeTable.rows };
@@ -180,9 +190,18 @@ export default function Reports({ tasks, workersMaster, brickTypes, mergeTask, c
             <button className={`tab-btn${view === 'project' ? ' active' : ''}`} onClick={() => setView('project')}>ภาพรวมโครงการ</button>
           </div>
           {view === 'project' && <button className="btn btn-secondary" onClick={exportExcel}>Excel</button>}
-          <ExportButtons tasks={tasks} workersMaster={workersMaster} currentUser={currentUser} fileBase="civil-report" onCsv={view === 'project' ? exportCSV : undefined} />
+          <ExportButtons tasks={tasks} workersMaster={workersMaster} currentUser={currentUser} title={`รายงาน${dataTab === 'actual' ? 'ข้อมูลจริง' : 'สำเนา'}`} fileBase={`civil-report-${dataTab}`} onCsv={view === 'project' ? exportCSV : undefined} />
         </div>
       </div>
+      <div className="tabs" role="tablist" aria-label="ประเภทข้อมูลรายงาน" style={{ marginBottom: 16, width: 'fit-content' }}>
+        {[['actual', 'ข้อมูลจริง', actualCount], ['copies', 'สำเนา', copyCount]].map(([key, label, count]) => (
+          <button key={key} id={`report-data-${key}`} type="button" role="tab" aria-selected={dataTab === key} aria-controls="report-data-panel" className={`tab-btn${dataTab === key ? ' active' : ''}`} onClick={() => { setDataTab(key); setOpenTaskId(null); }}>
+            {label} ({count})
+          </button>
+        ))}
+      </div>
+      <div id="report-data-panel" role="tabpanel" aria-labelledby={`report-data-${dataTab}`}>
+      {dataTab === 'copies' && <p className="cell-muted" style={{ marginBottom: 16 }}>แสดงเฉพาะงานสำเนา · ไม่นับรวมใน Productivity ทั้งโครงการ</p>}
       {view === 'project' && (
         <div id="reportTabs" className="tabs" style={{ marginBottom: 16, width: 'fit-content' }}>
           {TABS.map(([key, label]) => (
@@ -200,8 +219,8 @@ export default function Reports({ tasks, workersMaster, brickTypes, mergeTask, c
         <StatCard icon={<Icon name="users" />} label="แรงงานที่มอบหมาย" value={totalWorkersAssigned + ' คน'} />
       </div>
 
-      {view === 'tasks' && <ReportTaskList tasks={tasks} prod={prodReport} onOpen={setOpenTaskId} />}
-      {view === 'project' && tab === 'productivity' && <ProductivityReport report={prodReport} workerNamesOf={(r) => (r.workers || []).map((w) => workerName(workersMaster, w))} />}
+      {view === 'tasks' && <ReportTaskList currentUser={currentUser} mergeTask={mergeTask} tasks={tasks} prod={visibleProdReport} onOpen={setOpenTaskId} />}
+      {view === 'project' && tab === 'productivity' && <ProductivityReport lockTasks={tasks} currentUser={currentUser} onTaskChanged={mergeTask} report={visibleProdReport} showProjectSummary={dataTab === 'actual'} workerNamesOf={(r) => (r.workers || []).map((w) => workerName(workersMaster, w))} />}
 
       {view === 'project' && tab !== 'productivity' && (<>
       <div className="card" style={{ marginBottom: 18 }}>
@@ -248,6 +267,7 @@ export default function Reports({ tasks, workersMaster, brickTypes, mergeTask, c
         </div>
       </div>
       </>)}
+      </div>
     </section>
   );
 }

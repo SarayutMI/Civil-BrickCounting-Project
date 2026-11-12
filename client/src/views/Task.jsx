@@ -11,13 +11,15 @@ import TaskDetail from './TaskDetail.jsx';
 export default function Task({
   taskSubView, currentTaskId, onOpenTask, onBack,
   taskFilter, setTaskFilter, taskSearch, setTaskSearch,
-  tasks, brickTypes, workersMaster, cameras, reloadCameras,
+  currentUser, tasks, brickTypes, workersMaster, cameras, reloadCameras,
   mergeTask, patchTaskRemote, reloadTasks,
 }) {
   return (
     <section id="view-task" className="view active">
       {taskSubView === 'list' ? (
         <TaskList
+          currentUser={currentUser}
+          mergeTask={mergeTask}
           tasks={tasks}
           brickTypes={brickTypes}
           cameras={cameras}
@@ -30,6 +32,7 @@ export default function Task({
         />
       ) : (
         <TaskDetail
+          currentUser={currentUser}
           taskId={currentTaskId}
           task={tasks.find((t) => t.id === currentTaskId)}
           brickTypes={brickTypes}

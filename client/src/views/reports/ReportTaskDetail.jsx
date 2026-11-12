@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import TaskLockControl, { TaskLockNotice, taskReadOnly } from '../../components/TaskLockControl.jsx';
 import Icon from '../../icons/Icon.jsx';
 import BarChart from '../../components/charts/BarChart.jsx';
 import TaskTimeline from '../../components/TaskTimeline.jsx';
@@ -21,6 +22,7 @@ const hms = (iso) => new Date(iso).toLocaleTimeString('th-TH', { hour12: false }
 
 export default function ReportTaskDetail({ task, tasks, workersMaster, brickTypes, mergeTask, currentUser, onBack }) {
   const toast = useToast();
+  const readOnly = taskReadOnly(task, currentUser);
   const [tab, setTab] = useState('timeline');
   const [prod, setProd] = useState(null);
   const [hist, setHist] = useState(null); // full history of this task (oldest first), null while loading
@@ -79,12 +81,15 @@ export default function ReportTaskDetail({ task, tasks, workersMaster, brickType
           <p>{task.zone || '—'} · <StatusBadge status={task.status} /></p>
         </div>
         <div className="toolbar">
+          <TaskLockControl task={task} currentUser={currentUser} onChanged={mergeTask} />
           <div className="tabs">
             {TABS.map(([k, label]) => <button key={k} className={`tab-btn${tab === k ? ' active' : ''}`} onClick={() => setTab(k)}>{label}</button>)}
           </div>
           <ExportButtons tasks={[task]} workersMaster={workersMaster} currentUser={currentUser} title={`รายงานงาน: ${task.name}`} fileBase={`civil-${task.name}`} onCsv={exportCsv} />
         </div>
       </div>
+
+      <TaskLockNotice task={task} currentUser={currentUser} />
 
       <div className="prod-kpis">
         <div className="prod-kpi"><span>ความคืบหน้า {prod?.resultSource === 'human' ? '(ผลตรวจแก้)' : ''}</span><strong>{prod ? pct(prod.Q, task.expectedArea) : done}%</strong><small>{fmt(prod ? prod.Q : task.area, 1)} / {fmt(task.expectedArea, 0)} ตร.ม. · {Number(prod ? prod.blocks : task.blocks || 0).toLocaleString()} บล็อก</small></div>
@@ -97,9 +102,9 @@ export default function ReportTaskDetail({ task, tasks, workersMaster, brickType
 
       {tab === 'productivity' && (
         <>
-          <ProductivityInputs task={task} prod={prod} brickTypes={brickTypes || []} workersMaster={workersMaster}
+          <ProductivityInputs readOnly={readOnly} task={task} prod={prod} brickTypes={brickTypes || []} workersMaster={workersMaster}
             onSaved={(fresh) => { if (mergeTask) mergeTask(fresh); setProdKey((k) => k + 1); setHistKey((k) => k + 1); }} />
-          <TaskProductivityCard prod={prod} workerNames={task.workers.map((w) => workerName(workersMaster, w))} showSteps onSourceChanged={() => { setProdKey((k) => k + 1); setHistKey((k) => k + 1); }} />
+          <TaskProductivityCard readOnly={readOnly} prod={prod} workerNames={task.workers.map((w) => workerName(workersMaster, w))} showSteps onSourceChanged={() => { setProdKey((k) => k + 1); setHistKey((k) => k + 1); }} />
           <div className="card"><div className="card-head"><h3>สูตรการคำนวณ</h3></div><div className="card-body"><FormulaBox /></div></div>
         </>
       )}

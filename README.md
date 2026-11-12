@@ -37,6 +37,12 @@ the session cookie is `Secure` automatically when `X-Forwarded-Proto: https` is 
 
 - **Auth:** HttpOnly session cookie, server-side sessions in table `sessions`, role permissions enforced on the
   API (not just hidden in the UI), 5 wrong logins = 5-minute lock.
+- **Task locks:** Admin can Lock / Unlock each task from Tasks or Reports. The same persisted lock covers Task
+  Data, report inputs and label review. Other roles can read/export locked tasks but cannot edit, delete, clear
+  or duplicate them, or modify their shared cameras, brick types or workers. Unlock restores existing role
+  permissions. Admin edits and automatic camera recording continue; copies have independent locks.
+- **Report data:** Reports separates original tasks (ข้อมูลจริง, the default) from copies (สำเนา). Tables,
+  statistics and exports follow the selected tab; whole-project productivity includes originals only.
 - **Working hours:** each task's `schedule` (start / break start / break end / end) switches it running ↔ paused
   automatically at those times. A manual pause/start inside a phase is kept until the next boundary. `finished` is
   never set automatically.

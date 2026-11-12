@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import TaskLockControl, { taskReadOnly } from '../components/TaskLockControl.jsx';
 import Icon from '../icons/Icon.jsx';
 import { StatusBadge, brickName, pct } from '../utils.jsx';
 import { useToast } from '../components/Toast.jsx';
@@ -66,7 +67,7 @@ function AddTaskModalBody({ brickTypes, cameras, onClose, onCreated }) {
   );
 }
 
-export default function TaskList({ tasks, brickTypes, cameras, filter, setFilter, search, setSearch, onOpenTask, reloadTasks }) {
+export default function TaskList({ currentUser, mergeTask, tasks, brickTypes, cameras, filter, setFilter, search, setSearch, onOpenTask, reloadTasks }) {
   const modal = useModal();
   const toast = useToast();
   const [copying, setCopying] = useState(null); // id of the task being duplicated
@@ -141,7 +142,8 @@ export default function TaskList({ tasks, brickTypes, cameras, filter, setFilter
                   <td>
                     <div className="row-actions">
                       <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); onOpenTask(t.id); }}>ดูรายละเอียด</button>
-                      <button className="btn btn-secondary btn-sm btn-icon" disabled={copying === t.id} onClick={(e) => { e.stopPropagation(); duplicate(t); }}
+                      <TaskLockControl task={t} currentUser={currentUser} onChanged={mergeTask} />
+                      <button className="btn btn-secondary btn-sm btn-icon" disabled={copying === t.id || taskReadOnly(t, currentUser)} onClick={(e) => { e.stopPropagation(); duplicate(t); }}
                         aria-label="Duplicate" title={copying === t.id ? 'กำลังคัดลอก…' : 'Duplicate — สร้างงานสำเนาไว้ลองแก้ / ลองปรับ (คัดลอกค่าตั้ง ประวัติภาพ Label และ Report, ไม่ผูกกล้อง)'}>
                         <Icon name="copy" />
                       </button>

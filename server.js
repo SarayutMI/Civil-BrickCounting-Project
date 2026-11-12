@@ -32,6 +32,7 @@ const bcrypt = require('bcrypt');
 const { pool } = require('./db');
 const { runMigrations } = require('./migrations');
 const { createAuth } = require('./auth');
+const { createTaskWriteGuard, createTaskLockHandler } = require('./taskLocks');
 const schedule = require('./schedule');
 const productivity = require('./productivity');
 const imageView = require('./imageView');
@@ -58,6 +59,7 @@ app.use(express.static(path.join(__dirname, 'client', 'dist'))); // serve the bu
 // state ทั้งหมดอยู่ใน Postgres — ตัวแปร cameras/users/roles ด้านล่างเป็นแค่ cache ที่ auth อ่านผ่าน getter
 const auth = createAuth({ pool, getUsers: () => users, getRoles: () => roles });
 app.use('/api', auth.requireAuth); // ทุก endpoint ต้องมี session ยกเว้น /api/login และ /api/health
+app.use('/api', createTaskWriteGuard({ getTasks: () => tasks }));
 app.use('/snapshots', auth.requireAuth, express.static(SNAPSHOTS_DIR));
 
 /* =========================================================
@@ -154,7 +156,11 @@ async function upsertTaskRow(t) {
        last_update=EXCLUDED.last_update, confidence=EXCLUDED.confidence, snapshot_interval=EXCLUDED.snapshot_interval,
        camera_id=EXCLUDED.camera_id, schedule=EXCLUDED.schedule, roi=EXCLUDED.roi,
        progress_series=EXCLUDED.progress_series, created_at=EXCLUDED.created_at,
-       timelapse_status=EXCLUDED.timelapse_status, extra=EXCLUDED.extra, auto_phase=EXCLUDED.auto_phase,
+       timelapse_status=EXCLUDED.timelapse_status,
+       extra=EXCLUDED.extra || jsonb_build_object(
+         'locked', COALESCE(tasks.extra->'locked', 'false'::jsonb),
+         'lockedAt', tasks.extra->'lockedAt', 'lockedBy', tasks.extra->'lockedBy'),
+       auto_phase=EXCLUDED.auto_phase,
        last_image_at=EXCLUDED.last_image_at`,
     [
       t.id, t.name, t.zone || '', t.brickType || null, t.status || 'pause',
@@ -691,10 +697,23 @@ app.post('/api/tasks', async (req, res) => {
   }
 });
 
+app.put('/api/tasks/:id/lock', createTaskLockHandler({
+  findTask,
+  // Only update lock metadata so concurrent automatic detection can't overwrite it.
+  saveTask: async (task) => {
+    await pool.query(`UPDATE tasks SET extra = extra || $2::jsonb WHERE id = $1`,
+      [task.id, JSON.stringify({ locked: task.locked, lockedAt: task.lockedAt, lockedBy: task.lockedBy })]);
+  },
+  audit,
+}));
+
 app.put('/api/tasks/:id', async (req, res) => {
   const t = findTask(req.params.id);
   if (!t) return res.status(404).json({ success: false, message: 'ไม่พบ Task นี้' });
   const body = req.body || {};
+  if (['locked', 'lockedAt', 'lockedBy'].some((key) => Object.hasOwn(body, key))) {
+    return res.status(400).json({ success: false, message: 'เปลี่ยนสถานะ Lock ผ่านปุ่ม Lock / Unlock เท่านั้น' });
+  }
   const editable = [
     'name', 'zone', 'brickType', 'status', 'workers', 'area', 'expectedArea',
     'blocks', 'cameraStatus', 'lastUpdate', 'confidence', 'snapshotInterval',
@@ -805,6 +824,10 @@ app.post('/api/tasks/:id/duplicate', async (req, res) => {
     createdAt: new Date().toISOString(), copyOf: src.id, copyOfName: src.name,
   });
   delete copy.autoPhase;
+  // Each copy has its own lock, controlled by Admin independently of the original.
+  delete copy.locked;
+  delete copy.lockedAt;
+  delete copy.lockedBy;
   delete copy.imageLost;
   if (copy.timelapseStatus === 'building') delete copy.timelapseStatus;
   let rows = 0;

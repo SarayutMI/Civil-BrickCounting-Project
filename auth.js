@@ -39,6 +39,8 @@ function cookieString(req, token, maxAgeMs) {
 // Reads are open to every signed-in user (dashboards need cameras/tasks/etc.); writes are gated.
 function requiredPermission(method, path) {
   const write = method !== 'GET' && method !== 'HEAD';
+  // The lock endpoint checks the Admin role itself, independent of page permissions.
+  if (/^\/api\/tasks\/[^/]+\/lock\/?$/i.test(path)) return null;
   if (/^\/api\/(users|alertconfig|alerts|storage)(\/|$)/.test(path)) return 'settings'; // incl. reads
   if (/^\/api\/(test-rtsp)$/.test(path)) return 'settings';
   if (/^\/api\/logs$/.test(path)) return 'logs';

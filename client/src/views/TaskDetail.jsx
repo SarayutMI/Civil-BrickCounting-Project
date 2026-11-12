@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import TaskLockControl, { TaskLockNotice, taskReadOnly } from '../components/TaskLockControl.jsx';
 import Icon from '../icons/Icon.jsx';
 import BentoItem from '../components/BentoItem.jsx';
 import { TaskProductivityCard } from '../components/ProductivityReport.jsx';
@@ -33,8 +34,9 @@ function historyFromParam(period) {
    the 2s poll never clobbers an in-progress edit — same split as the
    original (paintTaskDetail vs refreshTaskLiveFields).
 =================================================================== */
-export default function TaskDetail({ taskId, task, brickTypes, workersMaster, cameras, reloadCameras, mergeTask, patchTaskRemote, onBack, onDeleted, onOpenTask, taskExists, reloadTasks }) {
+export default function TaskDetail({ currentUser, taskId, task, brickTypes, workersMaster, cameras, reloadCameras, mergeTask, patchTaskRemote, onBack, onDeleted, onOpenTask, taskExists, reloadTasks }) {
   const toast = useToast();
+  const readOnly = taskReadOnly(task, currentUser);
 
   // ---- Form state (seeded once per taskId; not touched by polling) ----
   const [name, setName] = useState('');
@@ -57,6 +59,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   const [historyPeriod, setHistoryPeriod] = useState('today');
   const [labeling, setLabeling] = useState(false); // Human-in-the-loop label review screen
   const [historyList, setHistoryList] = useState([]);
+  useEffect(() => { if (readOnly) setLabeling(false); }, [readOnly]);
 
 
   // Seed form state whenever we switch to a different task.
@@ -171,6 +174,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
 
   function patchView(partial) { setViewDraft((v) => ({ ...v, ...partial })); }
   async function saveView() {
+    if (readOnly) return;
     if (!selectedCameraId) return;
     if (task.roi && task.roi.length > 0 && !window.confirm('เปลี่ยนมุมภาพแล้ว ROI ที่วาดไว้ (ของทุก Task ที่ใช้กล้องนี้) จะไม่ตรงกับภาพใหม่ — ต้องวาด ROI ใหม่ ต้องการบันทึกต่อหรือไม่?')) return;
     const { ok, data } = await api.saveCameraView(selectedCameraId, viewDraft);
@@ -179,6 +183,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   }
 
   function addWorkerToTask(wid) {
+    if (readOnly) return;
     if (!wid) return;
     if (task.workers.includes(wid)) return;
     const workers = [...task.workers, wid];
@@ -188,6 +193,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
     setWorkerSelectValue('');
   }
   function removeWorkerFromTask(wid) {
+    if (readOnly) return;
     const workers = task.workers.filter((w) => w !== wid);
     mergeTask({ ...task, workers });
     patchTaskRemote(task.id, { workers });
@@ -195,6 +201,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   }
 
   async function saveTaskInfo() {
+    if (readOnly) return;
     const partial = {
       name: name || task.name,
       zone: zone || task.zone,
@@ -215,12 +222,14 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   }
 
   async function setTaskStatus(status) {
+    if (readOnly) return;
     mergeTask({ ...task, status });
     const { ok, data } = await api.patchTask(task.id, { status });
-    if (ok) mergeTask(data);
+    if (!ok) { toast(data.message || 'บันทึกสถานะไม่สำเร็จ'); return; }
+    mergeTask(data);
     const label = { running: 'เริ่มตรวจจับแล้ว', pause: 'พักการตรวจจับแล้ว', finished: 'หยุดการตรวจจับแล้ว' };
     toast(label[status] || 'อัปเดตสถานะแล้ว', 'success');
-    if (!ok) toast(data.message || 'บันทึกสถานะไม่สำเร็จ');
+
   }
 
   function roiUndo() { setRoiPoints((pts) => pts.slice(0, -1)); }
@@ -230,6 +239,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
     toast('ปิดพื้นที่ ROI แล้ว — อย่าลืมกด "บันทึก ROI" เพื่อ persist ค่านี้');
   }
   async function saveRoi() {
+    if (readOnly) return;
     if (roiPoints.length > 0 && roiPoints.length < 3) {
       toast('ต้องมีอย่างน้อย 3 จุดเพื่อบันทึก ROI (หรือกด Clear ถ้าไม่ต้องการ ROI)');
       return;
@@ -240,12 +250,14 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   }
 
   async function rebuildTimelapse() {
+    if (readOnly) return;
     const { ok, data } = await api.buildTimelapse(task.id);
     toast(data.message || 'กำลังสร้างวิดีโอ...', ok ? 'success' : 'info');
     if (ok) mergeTask({ ...task, timelapseStatus: 'building' });
   }
 
   async function clearTaskData() {
+    if (readOnly) return;
     const typed = window.prompt(`ล้างข้อมูลของ "${task.name}"?\nจะลบประวัติ ภาพ Label ที่ตรวจแก้ และไทม์แลปส์ของงานนี้ทั้งหมด แล้วรีเซ็ตพื้นที่/บล็อกเป็น 0 (ค่าตั้งของงานยังอยู่) — ย้อนกลับไม่ได้\n\nพิมพ์ชื่องานเพื่อยืนยัน:`);
     if (typed === null) return;
     const { ok, data } = await api.clearTaskData(task.id, typed);
@@ -257,6 +269,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
   }
 
   async function deleteTaskItem() {
+    if (readOnly) return;
     if (!window.confirm('ยืนยันลบ Task นี้? การลบไม่สามารถย้อนกลับได้')) return;
     const { ok, data } = await api.deleteTask(task.id);
     if (ok) { toast('ลบ Task แล้ว', 'success'); await reloadTasks(); onDeleted(); }
@@ -276,7 +289,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
 
   const historyRows = historyList.slice().reverse();
 
-  if (labeling) return <LabelEditor task={task} onClose={() => { setLabeling(false); setProdKey((k) => k + 1); }} onSourceChanged={(src) => mergeTask({ ...task, resultSource: src })}
+  if (labeling && !readOnly) return <LabelEditor task={task} onClose={() => { setLabeling(false); setProdKey((k) => k + 1); }} onSourceChanged={(src) => mergeTask({ ...task, resultSource: src })}
     onTaskChanged={(nums) => mergeTask({ ...task, ...nums })} />;
 
   return (
@@ -284,11 +297,16 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
       <div className="detail-back"><button className="btn btn-secondary" onClick={onBack}>← กลับ Tasks</button></div>
       <div className="section-head">
         <div><h2>Task Detail</h2><p><CameraBadge status={task.cameraStatus} /> <StatusBadge status={task.status} /> <span>อัปเดตล่าสุด {task.lastUpdate}</span></p></div>
-        <button className={`btn ${task.status === 'finished' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setLabeling(true)}
+        <div className="toolbar">
+        <TaskLockControl task={task} currentUser={currentUser} onChanged={mergeTask} />
+        <button disabled={readOnly} className={`btn ${task.status === 'finished' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setLabeling(true)}
           title="ตรวจแก้กรอบของ AI ในภาพที่บันทึกไว้ — ลบที่ทายผิด ตีกรอบอิฐที่ AI พลาด แล้วสรุปจำนวนใหม่">
           <Icon name="edit" /> ตรวจแก้ Label (Human-in-the-loop)
         </button>
+        </div>
       </div>
+
+      <TaskLockNotice task={task} currentUser={currentUser} />
 
       {task.copyOf && (
         <div className="copy-banner">
@@ -306,7 +324,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
         <BentoItem icon={<Icon name="block" />} label="จำนวนบล็อกทั้งหมด" value={task.blocks.toLocaleString() + (ratio ? ` (×${ratio} m²)` : '')} bg="var(--gray-tint)" fg="var(--muted)" />
       </div>
 
-      <TaskProductivityCard prod={prod} workerNames={task.workers.map((w) => workerName(workersMaster, w))}
+      <TaskProductivityCard readOnly={readOnly} prod={prod} workerNames={task.workers.map((w) => workerName(workersMaster, w))}
         onSourceChanged={(src) => { mergeTask({ ...task, resultSource: src }); setProdKey((k) => k + 1); }} />
 
       <div className="detail-grid">
@@ -314,13 +332,13 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
           <div className="card-head">
             <h3>Live Camera / ROI</h3>
             <div className="action-row">
-              <button className="btn btn-secondary btn-sm" onClick={roiUndo}>Undo</button>
-              <button className="btn btn-secondary btn-sm" onClick={roiClear}>Clear</button>
-              <button className="btn btn-secondary btn-sm" onClick={roiClose}>ปิด ROI</button>
-              <button className="btn btn-primary btn-sm" onClick={saveRoi}>บันทึก ROI</button>
+              <button className="btn btn-secondary btn-sm" disabled={readOnly} onClick={roiUndo}>Undo</button>
+              <button className="btn btn-secondary btn-sm" disabled={readOnly} onClick={roiClear}>Clear</button>
+              <button className="btn btn-secondary btn-sm" disabled={readOnly} onClick={roiClose}>ปิด ROI</button>
+              <button className="btn btn-primary btn-sm" disabled={readOnly} onClick={saveRoi}>บันทึก ROI</button>
             </div>
           </div>
-          <div className="card-body">
+          <fieldset className="card-body task-edit-fields" disabled={readOnly}>
             <div className="action-row" style={{ alignItems: 'center', marginBottom: 12, gap: 10 }}>
               <select className="input" style={{ maxWidth: 280 }} value={selectedCameraId} onChange={(e) => setTaskCamera(e.target.value)} disabled={!!task.copyOf} title={task.copyOf ? 'งานสำเนาผูกกล้องไม่ได้' : undefined}>
                 <option value="">— ไม่เลือกกล้อง —</option>
@@ -380,7 +398,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
                     return ftpFrameUrl ? <img style={{ ...imgStyle, display: show ? imgStyle.display : 'none' }} src={ftpFrameUrl} onLoad={onSize} alt="" /> : null;
                   }}
                 >
-                  <RoiCanvas points={roiPoints} onAddPoint={(nx, ny) => setRoiPoints((pts) => [...pts, [nx, ny]])} />
+                  <RoiCanvas points={roiPoints} onAddPoint={(nx, ny) => { if (!readOnly) setRoiPoints((pts) => [...pts, [nx, ny]]); }} />
                   <BBoxCanvas lastDetection={task.lastDetection} />
                 </CameraStage>
               )}
@@ -402,12 +420,12 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
               <span style={{ color: 'var(--accent)' }}>■</span> ฟ้า = bbox ที่นำมานับจริง (จุดกึ่งกลางอยู่ใน ROI){' '}
               <span style={{ color: 'var(--orange)' }}>■</span> ส้ม = คนที่โมเดลที่สองตรวจพบ (เส้นทึบ = อยู่ในโซนงาน, เส้นประ = นอกโซน)
             </p>
-          </div>
+          </fieldset>
         </div>
 
         <div className="card">
           <div className="card-head"><h3>Task Information</h3></div>
-          <div className="card-body">
+          <fieldset className="card-body task-edit-fields" disabled={readOnly}>
             <div className="form-grid">
               <div className="form-group full"><label>ชื่องาน</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
               <div className="form-group"><label>Zone</label><input className="input" value={zone} onChange={(e) => setZone(e.target.value)} /></div>
@@ -461,7 +479,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
                 title={task.status === 'running' ? 'หยุดหรือพักงานก่อน แล้วค่อยล้างข้อมูล' : 'ลบประวัติ ภาพ และ Label ของงานนี้ — ค่าตั้งของงานยังอยู่'}>Clear Data</button>
               <button className="btn btn-danger" onClick={deleteTaskItem}>ลบ Task</button>
             </div>
-          </div>
+          </fieldset>
         </div>
       </div>
 
@@ -499,7 +517,7 @@ export default function TaskDetail({ taskId, task, brickTypes, workersMaster, ca
         <div className="card-head">
           <h3>Time-lapse{task.status === 'finished' ? ' — งานนี้เสร็จแล้ว' : ''}</h3>
           <div className="action-row">
-            <button className="btn btn-secondary btn-sm" disabled={task.timelapseStatus === 'building'} onClick={rebuildTimelapse}>
+            <button className="btn btn-secondary btn-sm" disabled={readOnly || task.timelapseStatus === 'building'} onClick={rebuildTimelapse}>
               {task.timelapseStatus === 'building' ? 'กำลังสร้าง...' : task.timelapseStatus ? 'สร้างใหม่' : 'สร้างไทม์แลปส์'}
             </button>
             {task.timelapseStatus === 'ready' && (

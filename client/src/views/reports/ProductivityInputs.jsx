@@ -23,12 +23,14 @@ function draftOf(task) {
   };
 }
 
-export default function ProductivityInputs({ task, prod, brickTypes, workersMaster, onSaved }) {
+export default function ProductivityInputs({ task, prod, brickTypes, workersMaster, onSaved, readOnly = false }) {
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => draftOf(task));
   const [saving, setSaving] = useState(false);
   useEffect(() => { if (!editing) setDraft(draftOf(task)); }, [task, editing]);
+
+  useEffect(() => { if (readOnly) setEditing(false); }, [readOnly]);
 
   const bt = brickTypes.find((b) => b.id === (editing ? draft.brickType : task.brickType));
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
@@ -37,6 +39,7 @@ export default function ProductivityInputs({ task, prod, brickTypes, workersMast
   const adj = Number(draft.timeAdjustMinutes) || 0;
 
   async function save() {
+    if (readOnly) return;
     const expectedArea = Number(draft.expectedArea);
     if (!(expectedArea > 0)) { toast('เป้าหมายพื้นที่ต้องมากกว่า 0'); return; }
     const pStd = String(draft.pStdOverride).trim() === '' ? null : Number(draft.pStdOverride);
@@ -63,11 +66,11 @@ export default function ProductivityInputs({ task, prod, brickTypes, workersMast
       <div className="card-head">
         <h3>ข้อมูลที่ใช้คำนวณ</h3>
         {!editing ? (
-          <button className="btn btn-secondary btn-sm" onClick={() => setEditing(true)}><Icon name="edit" /> แก้ไขย้อนหลัง</button>
+          <button className="btn btn-secondary btn-sm" disabled={readOnly} onClick={() => setEditing(true)}><Icon name="edit" /> แก้ไขย้อนหลัง</button>
         ) : (
           <div className="action-row" style={{ gap: 8 }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)} disabled={saving}>ยกเลิก</button>
-            <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>{saving ? 'กำลังบันทึก…' : 'บันทึกและคำนวณใหม่'}</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)} disabled={saving || readOnly}>ยกเลิก</button>
+            <button className="btn btn-primary btn-sm" onClick={save} disabled={saving || readOnly}>{saving ? 'กำลังบันทึก…' : 'บันทึกและคำนวณใหม่'}</button>
           </div>
         )}
       </div>
@@ -82,7 +85,7 @@ export default function ProductivityInputs({ task, prod, brickTypes, workersMast
             <div><span>เวลาทำงาน</span><strong>{prod ? fmtDuration(prod.runMinutes) : '…'}</strong><small>{prod?.timeAdjustMinutes ? `จากภาพ ${fmtDuration(imageMin)} ${prod.timeAdjustMinutes > 0 ? '+' : '−'} ปรับ ${fmtDuration(Math.abs(prod.timeAdjustMinutes))}` : 'จาก timestamp ของภาพ'}</small></div>
           </div>
         ) : (
-          <div className="pi-form">
+          <fieldset className="pi-form task-edit-fields" disabled={readOnly}>
             <div className="form-group full">
               <label>แรงงานที่มอบหมาย (N) — เพิ่มคนที่ลืมใส่ได้</label>
               <div className="pi-pills">
@@ -121,7 +124,7 @@ export default function ProductivityInputs({ task, prod, brickTypes, workersMast
             <p className="cell-muted" style={{ fontSize: 12, margin: '4px 0 0' }}>
               บันทึกแล้วจะแก้ข้อมูลของงานนี้โดยตรง (หน้า Task ก็เปลี่ยนตาม) และคำนวณ Q, N, T, P, % ต่าง, Duration ใหม่ทั้งหมด รวมถึงใน PDF / Word — มีบันทึกใน Logs ว่าใครแก้อะไร
             </p>
-          </div>
+          </fieldset>
         )}
       </div>
     </div>
